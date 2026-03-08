@@ -175,6 +175,31 @@ impl<'a> ParsedCommand<'a> {
             Some(v) => serde_json::from_str::<Vec<String>>(v).unwrap_or_else(|_| vec![v.clone()]),
         }
     }
+
+    /// Return `true` if `name` is present in the parsed flag map.
+    ///
+    /// A flag is present when it was explicitly provided on the command line
+    /// **or** when the parser inserted a default or env-var value.
+    /// To distinguish explicit from default, use [`ParsedCommand::flag`] and
+    /// compare with the flag definition's default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Flag, Parser};
+    /// let cmd = Command::builder("run")
+    ///     .flag(Flag::builder("verbose").build().unwrap())
+    ///     .flag(Flag::builder("output").takes_value().default_value("text").build().unwrap())
+    ///     .build().unwrap();
+    /// let cmds = vec![cmd];
+    /// let parsed = Parser::new(&cmds).parse(&["run", "--verbose"]).unwrap();
+    /// assert!(parsed.has_flag("verbose"));
+    /// assert!(parsed.has_flag("output"));  // present via default
+    /// assert!(!parsed.has_flag("missing"));
+    /// ```
+    pub fn has_flag(&self, name: &str) -> bool {
+        self.flags.contains_key(name)
+    }
 }
 
 /// A command in the registry, potentially with subcommands.

@@ -20,6 +20,18 @@ The following are considered **public API** and will not change within a minor v
 - `ArgotCommand` trait
 - `McpServer` method signatures (feature: `mcp`)
 
+### Proc-Macro (`argot-derive`) Attribute Stability
+
+The `#[derive(ArgotCommand)]` macro and all documented `#[argot(...)]` attributes are **stable from v0.2 onwards**.
+
+| Status | Items |
+|--------|-------|
+| **Stable** | All struct-level keys: `canonical`, `summary`, `description`, `alias`, `best_practice`, `anti_pattern` |
+| **Stable** | All field-level keys: `positional`, `flag`, `required`, `short`, `takes_value`, `description`, `default` |
+| **Not guaranteed** | Compiler error message text; internal proc-macro helper identifiers |
+| **Breaking (major bump)** | Removing or renaming any documented attribute key |
+| **Non-breaking** | Adding new optional attribute keys with backward-compatible defaults |
+
 ## What May Change (0.x)
 
 - Items marked `#[doc(hidden)]`

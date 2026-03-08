@@ -303,3 +303,219 @@ fn test_command_named_version_parses_correctly() {
     let parsed = parser.parse(&["version"]).unwrap();
     assert_eq!(parsed.command.canonical, "version");
 }
+
+// ================================================================
+// ParseError variant coverage
+// ================================================================
+
+#[test]
+fn test_parse_error_no_command() {
+    let cmds = vec![Command::builder("run").build().unwrap()];
+    assert!(matches!(
+        Parser::new(&cmds).parse(&[]),
+        Err(argot::ParseError::NoCommand)
+    ));
+}
+
+#[test]
+fn test_parse_error_unknown_command() {
+    let cmds = vec![Command::builder("run").build().unwrap()];
+    assert!(matches!(
+        Parser::new(&cmds).parse(&["nope"]),
+        Err(argot::ParseError::Resolve(
+            argot::ResolveError::Unknown { .. }
+        ))
+    ));
+}
+
+#[test]
+fn test_parse_error_ambiguous_command() {
+    let cmds = vec![
+        Command::builder("fetch").build().unwrap(),
+        Command::builder("format").build().unwrap(),
+    ];
+    assert!(matches!(
+        Parser::new(&cmds).parse(&["f"]),
+        Err(argot::ParseError::Resolve(
+            argot::ResolveError::Ambiguous { .. }
+        ))
+    ));
+}
+
+#[test]
+fn test_parse_error_missing_argument() {
+    let cmds = vec![Command::builder("get")
+        .argument(Argument::builder("id").required().build().unwrap())
+        .build()
+        .unwrap()];
+    match Parser::new(&cmds).parse(&["get"]) {
+        Err(argot::ParseError::MissingArgument(n)) => assert_eq!(n, "id"),
+        other => panic!("expected MissingArgument(id), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_error_unexpected_argument() {
+    let cmds = vec![Command::builder("run").build().unwrap()];
+    match Parser::new(&cmds).parse(&["run", "extra"]) {
+        Err(argot::ParseError::UnexpectedArgument(v)) => assert_eq!(v, "extra"),
+        other => panic!("expected UnexpectedArgument, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_error_missing_required_flag() {
+    let cmds = vec![Command::builder("deploy")
+        .flag(
+            Flag::builder("env")
+                .takes_value()
+                .required()
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap()];
+    match Parser::new(&cmds).parse(&["deploy"]) {
+        Err(argot::ParseError::MissingFlag(n)) => assert_eq!(n, "env"),
+        other => panic!("expected MissingFlag(env), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_error_flag_missing_value() {
+    let cmds = vec![Command::builder("build")
+        .flag(Flag::builder("target").takes_value().build().unwrap())
+        .build()
+        .unwrap()];
+    match Parser::new(&cmds).parse(&["build", "--target"]) {
+        Err(argot::ParseError::FlagMissingValue { name }) => assert_eq!(name, "target"),
+        other => panic!("expected FlagMissingValue, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_error_unknown_flag() {
+    let cmds = vec![Command::builder("run").build().unwrap()];
+    match Parser::new(&cmds).parse(&["run", "--ghost"]) {
+        Err(argot::ParseError::UnknownFlag(n)) => assert!(n.contains("ghost")),
+        other => panic!("expected UnknownFlag, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_error_unknown_subcommand() {
+    let cmds = vec![Command::builder("remote")
+        .subcommand(Command::builder("add").build().unwrap())
+        .build()
+        .unwrap()];
+    match Parser::new(&cmds).parse(&["remote", "bogus"]) {
+        Err(argot::ParseError::UnknownSubcommand { parent, got }) => {
+            assert_eq!(parent, "remote");
+            assert_eq!(got, "bogus");
+        }
+        other => panic!("expected UnknownSubcommand, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_error_invalid_choice() {
+    let cmds = vec![Command::builder("build")
+        .flag(
+            Flag::builder("format")
+                .takes_value()
+                .choices(["json", "yaml"])
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap()];
+    match Parser::new(&cmds).parse(&["build", "--format=xml"]) {
+        Err(argot::ParseError::InvalidChoice {
+            flag,
+            value,
+            choices,
+        }) => {
+            assert_eq!(flag, "format");
+            assert_eq!(value, "xml");
+            assert!(choices.contains(&"json".to_string()));
+        }
+        other => panic!("expected InvalidChoice, got {:?}", other),
+    }
+}
+
+// ================================================================
+// Positive paths for recently added features
+// ================================================================
+
+#[test]
+fn test_choices_valid_value_accepted() {
+    let cmds = vec![Command::builder("build")
+        .flag(
+            Flag::builder("fmt")
+                .takes_value()
+                .choices(["json", "yaml"])
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap()];
+    let parsed = Parser::new(&cmds).parse(&["build", "--fmt=yaml"]).unwrap();
+    assert_eq!(parsed.flags["fmt"], "yaml");
+}
+
+#[test]
+fn test_repeatable_boolean_flag_count() {
+    let cmds = vec![Command::builder("run")
+        .flag(
+            Flag::builder("verbose")
+                .short('v')
+                .repeatable()
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap()];
+    let parsed = Parser::new(&cmds)
+        .parse(&["run", "-v", "-v", "-v"])
+        .unwrap();
+    assert_eq!(parsed.flags["verbose"], "3");
+    assert_eq!(parsed.flag_count("verbose"), 3);
+}
+
+#[test]
+fn test_repeatable_value_flag_collects() {
+    let cmds = vec![Command::builder("run")
+        .flag(
+            Flag::builder("tag")
+                .takes_value()
+                .repeatable()
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap()];
+    let parsed = Parser::new(&cmds)
+        .parse(&["run", "--tag=alpha", "--tag=beta"])
+        .unwrap();
+    let tags: Vec<String> = serde_json::from_str(&parsed.flags["tag"]).unwrap();
+    assert_eq!(tags, ["alpha", "beta"]);
+}
+
+#[test]
+fn test_flag_present_and_absent() {
+    let cmds = vec![Command::builder("x")
+        .flag(Flag::builder("v").build().unwrap())
+        .flag(
+            Flag::builder("out")
+                .takes_value()
+                .default_value("text")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap()];
+    let parsed = Parser::new(&cmds).parse(&["x", "--v"]).unwrap();
+    assert!(parsed.flag("v").is_some());
+    assert!(parsed.flag("out").is_some()); // default applied
+    assert!(parsed.flag("other").is_none());
+}

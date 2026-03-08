@@ -50,6 +50,10 @@ pub struct Flag {
     /// For value-taking flags: values are collected into a JSON array string
     /// (e.g., `--tag a --tag b` → `["a","b"]`).
     pub repeatable: bool,
+    /// Environment variable to check when the flag is absent from the command line.
+    ///
+    /// Lookup order: CLI argv → env var → `default` → required error.
+    pub env: Option<String>,
 }
 
 /// Consuming builder for [`Flag`].
@@ -80,6 +84,7 @@ pub struct FlagBuilder {
     default: Option<String>,
     choices: Option<Vec<String>>,
     repeatable: bool,
+    env: Option<String>,
 }
 
 impl Flag {
@@ -107,6 +112,7 @@ impl Flag {
             default: None,
             choices: None,
             repeatable: false,
+            env: None,
         }
     }
 }
@@ -193,6 +199,25 @@ impl FlagBuilder {
         self
     }
 
+    /// Register an environment variable as a fallback source for this flag.
+    ///
+    /// When the flag is not provided on the command line, the parser calls
+    /// `std::env::var(var_name)`. If the variable is set and non-empty, its
+    /// value is used (validated against `choices` if set). The full lookup
+    /// order is: CLI → env var → default value → required error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::Flag;
+    /// let flag = Flag::builder("token").takes_value().env("DEPLOY_TOKEN").build().unwrap();
+    /// assert_eq!(flag.env.as_deref(), Some("DEPLOY_TOKEN"));
+    /// ```
+    pub fn env(mut self, var_name: impl Into<String>) -> Self {
+        self.env = Some(var_name.into());
+        self
+    }
+
     /// Consume the builder and return a [`Flag`].
     ///
     /// # Errors
@@ -220,6 +245,7 @@ impl FlagBuilder {
             default: self.default,
             choices: self.choices,
             repeatable: self.repeatable,
+            env: self.env,
         })
     }
 }

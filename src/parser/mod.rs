@@ -24,7 +24,7 @@
 //!    the value to `"false"`. After all tokens are consumed, positional
 //!    arguments are bound by declaration order (variadic last arguments
 //!    collect all remaining positionals into a JSON array); required flags
-//!    and arguments are validated; and defaults are applied.
+//!    and arguments are validated; and defaults and environment-variable fallbacks are applied.
 //!
 //! # Example
 //!
@@ -78,7 +78,8 @@ pub enum ParseError {
     /// The inner `String` is the first unexpected token.
     #[error("unexpected argument: {0}")]
     UnexpectedArgument(String),
-    /// A required flag was not supplied.
+    /// A required flag was not supplied, and no environment-variable fallback
+    /// (registered with [`crate::FlagBuilder::env`]) provided a value.
     ///
     /// The inner `String` is the flag's long name (without `--`).
     #[error("missing required flag: --{0}")]
@@ -460,6 +461,29 @@ impl<'a> Parser<'a> {
             return Err(ParseError::UnexpectedArgument(
                 positionals[cmd.arguments.len()].clone(),
             ));
+        }
+
+        // Env var fallback: for each flag not yet set by argv, check its env var.
+        for flag_def in &cmd.flags {
+            if !flags.contains_key(&flag_def.name) {
+                if let Some(ref var_name) = flag_def.env {
+                    if let Ok(val) = std::env::var(var_name) {
+                        if !val.is_empty() {
+                            // Validate against choices if present
+                            if let Some(ref choices) = flag_def.choices {
+                                if !choices.contains(&val) {
+                                    return Err(ParseError::InvalidChoice {
+                                        flag: flag_def.name.clone(),
+                                        value: val,
+                                        choices: choices.clone(),
+                                    });
+                                }
+                            }
+                            flags.insert(flag_def.name.clone(), val);
+                        }
+                    }
+                }
+            }
         }
 
         // Validate required flags; apply defaults.
@@ -1117,6 +1141,121 @@ mod tests {
         let result = Command::builder("cmd").flag(flag).build();
         assert!(matches!(result, Err(BuildError::EmptyChoices(_))));
     }
+
+    #[test]
+    fn test_env_var_fallback_basic() {
+        let var = "ARGOT_TEST_ENVFLAG_BASIC_11111";
+        std::env::remove_var(var);
+        let cmds = vec![Command::builder("cmd")
+            .flag(
+                Flag::builder("token")
+                    .takes_value()
+                    .env(var)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+
+        // Not set → absent
+        assert!(!parser.parse(&["cmd"]).unwrap().flags.contains_key("token"));
+
+        // Set → present
+        std::env::set_var(var, "abc123");
+        assert_eq!(parser.parse(&["cmd"]).unwrap().flags["token"], "abc123");
+
+        // CLI overrides env
+        assert_eq!(
+            parser.parse(&["cmd", "--token=override"]).unwrap().flags["token"],
+            "override"
+        );
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn test_env_var_fallback_with_default() {
+        let var = "ARGOT_TEST_ENVFLAG_DEFAULT_22222";
+        std::env::remove_var(var);
+        let cmds = vec![Command::builder("cmd")
+            .flag(
+                Flag::builder("mode")
+                    .takes_value()
+                    .env(var)
+                    .default_value("dev")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+
+        // No CLI, no env → default
+        assert_eq!(parser.parse(&["cmd"]).unwrap().flags["mode"], "dev");
+
+        // No CLI, env set → env wins over default
+        std::env::set_var(var, "prod");
+        assert_eq!(parser.parse(&["cmd"]).unwrap().flags["mode"], "prod");
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn test_env_var_satisfies_required_flag() {
+        let var = "ARGOT_TEST_ENVFLAG_REQUIRED_33333";
+        std::env::remove_var(var);
+        let cmds = vec![Command::builder("cmd")
+            .flag(
+                Flag::builder("token")
+                    .takes_value()
+                    .required()
+                    .env(var)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+
+        // Required + env set → OK
+        std::env::set_var(var, "secret");
+        assert_eq!(parser.parse(&["cmd"]).unwrap().flags["token"], "secret");
+
+        // Required + env absent → MissingFlag
+        std::env::remove_var(var);
+        assert!(matches!(
+            parser.parse(&["cmd"]),
+            Err(ParseError::MissingFlag(_))
+        ));
+    }
+
+    #[test]
+    fn test_env_var_validates_choices() {
+        let var = "ARGOT_TEST_ENVFLAG_CHOICES_44444";
+        std::env::remove_var(var);
+        let cmds = vec![Command::builder("cmd")
+            .flag(
+                Flag::builder("env_name")
+                    .takes_value()
+                    .choices(["prod", "staging"])
+                    .env(var)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+
+        std::env::set_var(var, "staging");
+        assert_eq!(parser.parse(&["cmd"]).unwrap().flags["env_name"], "staging");
+
+        std::env::set_var(var, "local");
+        assert!(matches!(
+            parser.parse(&["cmd"]),
+            Err(ParseError::InvalidChoice { .. })
+        ));
+
+        std::env::remove_var(var);
+    }
 }
 
 #[cfg(test)]
@@ -1152,5 +1291,32 @@ mod typed_getter_tests {
         assert_eq!(parsed.flag_count("missing"), 0);
         assert_eq!(parsed.flag_values("output"), vec!["text"]);
         assert!(parsed.flag_values("missing").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod has_flag_tests {
+    use super::*;
+    use crate::model::{Argument, Command, Flag};
+
+    #[test]
+    fn test_has_flag() {
+        let cmd = Command::builder("run")
+            .flag(Flag::builder("verbose").build().unwrap())
+            .flag(
+                Flag::builder("output")
+                    .takes_value()
+                    .default_value("text")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parser = Parser::new(&cmds);
+        let parsed = parser.parse(&["run", "--verbose"]).unwrap();
+        assert!(parsed.has_flag("verbose"));
+        assert!(parsed.has_flag("output")); // present via default
+        assert!(!parsed.has_flag("nonexistent"));
     }
 }

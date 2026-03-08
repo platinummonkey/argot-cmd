@@ -81,6 +81,7 @@
 //! - [`query`] — command registry and search
 //! - [`render`] — human-readable and Markdown output
 
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod cli;
@@ -98,7 +99,9 @@ pub use model::{
 };
 pub use parser::{ParseError, Parser};
 pub use query::{QueryError, Registry};
-pub use render::{render_ambiguity, render_help, render_markdown, render_subcommand_list};
+pub use render::{
+    render_ambiguity, render_help, render_markdown, render_resolve_error, render_subcommand_list,
+};
 pub use resolver::{ResolveError, Resolver};
 
 /// Trait implemented by types annotated with `#[derive(ArgotCommand)]`.

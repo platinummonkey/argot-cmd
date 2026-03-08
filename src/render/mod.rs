@@ -298,6 +298,46 @@ pub fn render_ambiguity(input: &str, candidates: &[String]) -> String {
     )
 }
 
+/// Render any [`crate::ResolveError`] as a human-readable string.
+///
+/// - [`crate::ResolveError::Ambiguous`] — delegates to [`render_ambiguity`].
+/// - [`crate::ResolveError::Unknown`] with suggestions — formats a
+///   "Did you mean?" message.
+/// - [`crate::ResolveError::Unknown`] without suggestions — formats a
+///   plain "Unknown command" message.
+///
+/// # Examples
+///
+/// ```
+/// # use argot::{Command, Resolver};
+/// # use argot::render::render_resolve_error;
+/// let cmds = vec![
+///     Command::builder("list").build().unwrap(),
+///     Command::builder("log").build().unwrap(),
+/// ];
+/// let resolver = Resolver::new(&cmds);
+///
+/// let err = resolver.resolve("xyz").unwrap_err();
+/// let msg = render_resolve_error(&err);
+/// assert!(msg.contains("xyz"));
+///
+/// let err2 = resolver.resolve("l").unwrap_err();
+/// let msg2 = render_resolve_error(&err2);
+/// assert!(msg2.contains("list"));
+/// ```
+pub fn render_resolve_error(error: &crate::resolver::ResolveError) -> String {
+    use crate::resolver::ResolveError;
+    match error {
+        ResolveError::Ambiguous { input, candidates } => render_ambiguity(input, candidates),
+        ResolveError::Unknown { input, suggestions } if !suggestions.is_empty() => format!(
+            "Unknown command: `{}`. Did you mean: {}?",
+            input,
+            suggestions.join(", ")
+        ),
+        ResolveError::Unknown { input, .. } => format!("Unknown command: `{}`", input),
+    }
+}
+
 fn build_usage(command: &Command) -> String {
     let mut parts = vec![command.canonical.clone()];
     if !command.subcommands.is_empty() {
@@ -424,5 +464,39 @@ mod tests {
         let out = render_subcommand_list(&cmds);
         assert!(out.contains("alpha"));
         assert!(out.contains("beta"));
+    }
+
+    #[test]
+    fn test_render_resolve_error_unknown_no_suggestions() {
+        use crate::resolver::ResolveError;
+        let err = ResolveError::Unknown {
+            input: "xyz".into(),
+            suggestions: vec![],
+        };
+        let msg = render_resolve_error(&err);
+        assert!(msg.contains("xyz"));
+        assert!(!msg.contains("Did you mean"));
+    }
+
+    #[test]
+    fn test_render_resolve_error_unknown_with_suggestions() {
+        use crate::resolver::ResolveError;
+        let err = ResolveError::Unknown {
+            input: "lst".into(),
+            suggestions: vec!["list".into()],
+        };
+        let msg = render_resolve_error(&err);
+        assert!(msg.contains("lst") && msg.contains("list") && msg.contains("Did you mean"));
+    }
+
+    #[test]
+    fn test_render_resolve_error_ambiguous() {
+        use crate::resolver::ResolveError;
+        let err = ResolveError::Ambiguous {
+            input: "l".into(),
+            candidates: vec!["list".into(), "log".into()],
+        };
+        let msg = render_resolve_error(&err);
+        assert!(msg.contains("list") && msg.contains("log"));
     }
 }
