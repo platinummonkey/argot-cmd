@@ -30,7 +30,7 @@
 
 use crate::parser::{ParseError, Parser};
 use crate::query::Registry;
-use crate::render::{render_help, render_subcommand_list};
+use crate::render::{DefaultRenderer, Renderer};
 use crate::resolver::Resolver;
 
 /// Errors produced by [`Cli::run`].
@@ -93,6 +93,8 @@ pub struct Cli {
     registry: Registry,
     app_name: String,
     version: Option<String>,
+    middlewares: Vec<Box<dyn crate::middleware::Middleware>>,
+    renderer: Box<dyn Renderer>,
 }
 
 impl Cli {
@@ -107,6 +109,8 @@ impl Cli {
             registry: Registry::new(commands),
             app_name: String::new(),
             version: None,
+            middlewares: vec![],
+            renderer: Box::new(DefaultRenderer),
         }
     }
 
@@ -123,6 +127,57 @@ impl Cli {
     /// If not set, `"(no version set)"` is printed.
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
+        self
+    }
+
+    /// Register a middleware that hooks into the parse-and-dispatch lifecycle.
+    ///
+    /// Middlewares are invoked in registration order. Multiple middlewares can
+    /// be added by calling `with_middleware` repeatedly.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use argot::{Cli, Command, middleware::Middleware};
+    ///
+    /// struct Audit;
+    /// impl Middleware for Audit {
+    ///     fn before_dispatch(&self, parsed: &argot::ParsedCommand<'_>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///         eprintln!("audit: {}", parsed.command.canonical);
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let cli = Cli::new(vec![Command::builder("run").build().unwrap()])
+    ///     .with_middleware(Audit);
+    /// ```
+    pub fn with_middleware<M: crate::middleware::Middleware + 'static>(mut self, m: M) -> Self {
+        self.middlewares.push(Box::new(m));
+        self
+    }
+
+    /// Replace the default renderer with a custom implementation.
+    ///
+    /// The renderer is used for all help text, Markdown, subcommand listings,
+    /// and ambiguity messages produced by this `Cli` instance.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use argot::{Cli, Command, render::Renderer};
+    /// struct MyRenderer;
+    /// impl Renderer for MyRenderer {
+    ///     fn render_help(&self, cmd: &argot::Command) -> String { format!("HELP: {}", cmd.canonical) }
+    ///     fn render_markdown(&self, cmd: &argot::Command) -> String { String::new() }
+    ///     fn render_subcommand_list(&self, cmds: &[argot::Command]) -> String { String::new() }
+    ///     fn render_ambiguity(&self, input: &str, _: &[String]) -> String { format!("bad: {}", input) }
+    /// }
+    ///
+    /// let cli = Cli::new(vec![Command::builder("run").build().unwrap()])
+    ///     .with_renderer(MyRenderer);
+    /// ```
+    pub fn with_renderer<R: Renderer + 'static>(mut self, renderer: R) -> Self {
+        self.renderer = Box::new(renderer);
         self
     }
 
@@ -194,7 +249,11 @@ impl Cli {
 
         // ── Built-in: empty args → list top-level commands ────────────────
         if argv_refs.is_empty() {
-            print!("{}", render_subcommand_list(self.registry.commands()));
+            print!(
+                "{}",
+                self.renderer
+                    .render_subcommand_list(self.registry.commands())
+            );
             return Ok(());
         }
 
@@ -202,7 +261,13 @@ impl Cli {
         let parser = Parser::new(self.registry.commands());
         match parser.parse(&argv_refs) {
             Ok(parsed) => {
-                match &parsed.command.handler {
+                // Before dispatch: run middleware hooks
+                for mw in &self.middlewares {
+                    mw.before_dispatch(&parsed).map_err(CliError::Handler)?;
+                }
+
+                // Call handler
+                let handler_result = match &parsed.command.handler {
                     Some(handler) => {
                         // HandlerFn returns Box<dyn Error> (no Send+Sync bound).
                         // We convert manually to match CliError::Handler.
@@ -215,9 +280,28 @@ impl Cli {
                         })
                     }
                     None => Err(CliError::NoHandler(parsed.command.canonical.to_string())),
+                };
+
+                // After dispatch: run middleware hooks (even on error)
+                let handler_result_for_mw: Result<(), Box<dyn std::error::Error + Send + Sync>> =
+                    match &handler_result {
+                        Ok(()) => Ok(()),
+                        Err(e) => Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                            e.to_string(),
+                        )),
+                    };
+                for mw in &self.middlewares {
+                    mw.after_dispatch(&parsed, &handler_result_for_mw);
                 }
+
+                handler_result
             }
             Err(parse_err) => {
+                // Fire on_parse_error middleware hooks
+                for mw in &self.middlewares {
+                    mw.on_parse_error(&parse_err);
+                }
+
                 eprintln!("error: {}", parse_err);
                 if let crate::parser::ParseError::Resolve(
                     crate::resolver::ResolveError::Unknown {
@@ -249,6 +333,133 @@ impl Cli {
         self.run(std::env::args().skip(1))
     }
 
+    /// Parse and dispatch a command asynchronously.
+    ///
+    /// Behaves identically to [`Cli::run`] but also invokes
+    /// [`AsyncHandlerFn`][crate::model::AsyncHandlerFn] handlers
+    /// registered with [`CommandBuilder::async_handler`].
+    ///
+    /// Must be called from an async context (e.g., inside `#[tokio::main]`).
+    ///
+    /// Dispatch priority: async handler → sync handler → `CliError::NoHandler`.
+    ///
+    /// # Feature
+    ///
+    /// Requires the `async` feature flag.
+    ///
+    /// # Errors
+    ///
+    /// Same variants as [`Cli::run`].
+    #[cfg(feature = "async")]
+    pub async fn run_async(
+        &self,
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Result<(), CliError> {
+        let args: Vec<String> = args.into_iter().map(|a| a.as_ref().to_string()).collect();
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        // ── Built-in: --help / -h ──────────────────────────────────────────
+        if argv.iter().any(|a| *a == "--help" || *a == "-h") {
+            let remaining: Vec<&str> = argv
+                .iter()
+                .copied()
+                .filter(|a| *a != "--help" && *a != "-h")
+                .collect();
+            let help_text = self.resolve_help_text(&remaining);
+            print!("{}", help_text);
+            return Ok(());
+        }
+
+        // ── Built-in: --version / -V ──────────────────────────────────────
+        if argv.iter().any(|a| *a == "--version" || *a == "-V") {
+            match &self.version {
+                Some(v) if !self.app_name.is_empty() => println!("{} {}", self.app_name, v),
+                Some(v) => println!("{}", v),
+                None => println!("(no version set)"),
+            }
+            return Ok(());
+        }
+
+        // ── Built-in: empty args → list top-level commands ────────────────
+        if argv.is_empty() {
+            print!(
+                "{}",
+                self.renderer
+                    .render_subcommand_list(self.registry.commands())
+            );
+            return Ok(());
+        }
+
+        // ── Normal parse ──────────────────────────────────────────────────
+        let parser = Parser::new(self.registry.commands());
+        match parser.parse(&argv) {
+            Ok(parsed) => {
+                // Before dispatch: run middleware hooks
+                for mw in &self.middlewares {
+                    mw.before_dispatch(&parsed).map_err(CliError::Handler)?;
+                }
+
+                // Prefer async handler over sync handler
+                let handler_result = if let Some(ref async_handler) = parsed.command.async_handler {
+                    async_handler(&parsed).await.map_err(|e| {
+                        let msg = e.to_string();
+                        let boxed: Box<dyn std::error::Error + Send + Sync> = msg.into();
+                        CliError::Handler(boxed)
+                    })
+                } else if let Some(ref handler) = parsed.command.handler {
+                    handler(&parsed).map_err(|e| {
+                        let msg = e.to_string();
+                        let boxed: Box<dyn std::error::Error + Send + Sync> = msg.into();
+                        CliError::Handler(boxed)
+                    })
+                } else {
+                    Err(CliError::NoHandler(parsed.command.canonical.clone()))
+                };
+
+                // After dispatch: run middleware hooks (even on error)
+                let handler_result_for_mw: Result<(), Box<dyn std::error::Error + Send + Sync>> =
+                    match &handler_result {
+                        Ok(()) => Ok(()),
+                        Err(e) => Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                            e.to_string(),
+                        )),
+                    };
+                for mw in &self.middlewares {
+                    mw.after_dispatch(&parsed, &handler_result_for_mw);
+                }
+
+                handler_result
+            }
+            Err(parse_err) => {
+                // Fire on_parse_error middleware hooks
+                for mw in &self.middlewares {
+                    mw.on_parse_error(&parse_err);
+                }
+
+                eprintln!("error: {}", parse_err);
+                if let crate::parser::ParseError::Resolve(
+                    crate::resolver::ResolveError::Unknown {
+                        ref suggestions, ..
+                    },
+                ) = parse_err
+                {
+                    if !suggestions.is_empty() {
+                        eprintln!("Did you mean one of: {}", suggestions.join(", "));
+                    }
+                }
+                let help_text = self.resolve_help_text(&argv);
+                eprint!("{}", help_text);
+                Err(CliError::Parse(parse_err))
+            }
+        }
+    }
+
+    /// Convenience: `run_async` using `std::env::args().skip(1)`.
+    #[cfg(feature = "async")]
+    pub async fn run_env_args_async(&self) -> Result<(), CliError> {
+        self.run_async(std::env::args().skip(1)).await
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────
 
     /// Walk the arg list and return the help text for the deepest command that
@@ -257,7 +468,9 @@ impl Cli {
     fn resolve_help_text(&self, argv: &[&str]) -> String {
         // Try to walk the command tree as far as possible.
         if argv.is_empty() {
-            return render_subcommand_list(self.registry.commands());
+            return self
+                .renderer
+                .render_subcommand_list(self.registry.commands());
         }
 
         // Skip any flag-looking tokens for the purpose of command resolution.
@@ -268,14 +481,20 @@ impl Cli {
             .collect();
 
         if words.is_empty() {
-            return render_subcommand_list(self.registry.commands());
+            return self
+                .renderer
+                .render_subcommand_list(self.registry.commands());
         }
 
         // Resolve the first word as a top-level command.
         let resolver = Resolver::new(self.registry.commands());
         let top_cmd = match resolver.resolve(words[0]) {
             Ok(cmd) => cmd,
-            Err(_) => return render_subcommand_list(self.registry.commands()),
+            Err(_) => {
+                return self
+                    .renderer
+                    .render_subcommand_list(self.registry.commands())
+            }
         };
 
         // Walk into subcommands as far as possible.
@@ -291,7 +510,7 @@ impl Cli {
             }
         }
 
-        render_help(current)
+        self.renderer.render_help(current)
     }
 }
 
@@ -431,5 +650,63 @@ mod tests {
             called.load(Ordering::SeqCst),
             "handler should have been called"
         );
+    }
+
+    #[test]
+    fn test_middleware_before_dispatch_called() {
+        use crate::middleware::Middleware;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Flag(Arc<AtomicBool>);
+        impl Middleware for Flag {
+            fn before_dispatch(
+                &self,
+                _: &crate::model::ParsedCommand<'_>,
+            ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let called = Arc::new(AtomicBool::new(false));
+        let handler_called = Arc::new(AtomicBool::new(false));
+        let handler_called2 = handler_called.clone();
+
+        let cmd = crate::model::Command::builder("run")
+            .handler(std::sync::Arc::new(move |_| {
+                handler_called2.store(true, Ordering::SeqCst);
+                Ok(())
+            }))
+            .build()
+            .unwrap();
+
+        let cli = super::Cli::new(vec![cmd]).with_middleware(Flag(called.clone()));
+        cli.run(["run"]).unwrap();
+
+        assert!(called.load(Ordering::SeqCst));
+        assert!(handler_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_middleware_can_abort_dispatch() {
+        use crate::middleware::Middleware;
+        struct Aborter;
+        impl Middleware for Aborter {
+            fn before_dispatch(
+                &self,
+                _: &crate::model::ParsedCommand<'_>,
+            ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                Err("aborted by middleware".into())
+            }
+        }
+
+        let cmd = crate::model::Command::builder("run")
+            .handler(std::sync::Arc::new(|_| panic!("should not be called")))
+            .build()
+            .unwrap();
+
+        let cli = super::Cli::new(vec![cmd]).with_middleware(Aborter);
+        assert!(cli.run(["run"]).is_err());
     }
 }

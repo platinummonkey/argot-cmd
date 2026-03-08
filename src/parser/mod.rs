@@ -1383,7 +1383,7 @@ mod typed_getter_tests {
 #[cfg(test)]
 mod has_flag_tests {
     use super::*;
-    use crate::model::{Argument, Command, Flag};
+    use crate::model::{Command, Flag};
 
     #[test]
     fn test_has_flag() {
@@ -1404,5 +1404,94 @@ mod has_flag_tests {
         assert!(parsed.has_flag("verbose"));
         assert!(parsed.has_flag("output")); // present via default
         assert!(!parsed.has_flag("nonexistent"));
+    }
+}
+
+#[cfg(test)]
+mod coercion_tests {
+    use super::*;
+    use crate::model::{Argument, Command, Flag};
+
+    #[test]
+    fn test_arg_as_u32() {
+        let cmd = Command::builder("resize")
+            .argument(Argument::builder("width").required().build().unwrap())
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parsed = Parser::new(&cmds).parse(&["resize", "1920"]).unwrap();
+        let w: u32 = parsed.arg_as("width").unwrap().unwrap();
+        assert_eq!(w, 1920);
+    }
+
+    #[test]
+    fn test_arg_as_parse_error() {
+        let cmd = Command::builder("cmd")
+            .argument(Argument::builder("n").required().build().unwrap())
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parsed = Parser::new(&cmds).parse(&["cmd", "notanumber"]).unwrap();
+        assert!(parsed.arg_as::<u32>("n").unwrap().is_err());
+    }
+
+    #[test]
+    fn test_arg_as_absent() {
+        let cmd = Command::builder("cmd").build().unwrap();
+        let cmds = vec![cmd];
+        let parsed = Parser::new(&cmds).parse(&["cmd"]).unwrap();
+        assert!(parsed.arg_as::<u32>("missing").is_none());
+    }
+
+    #[test]
+    fn test_flag_as_u16() {
+        let cmd = Command::builder("serve")
+            .flag(
+                Flag::builder("port")
+                    .takes_value()
+                    .default_value("8080")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parsed = Parser::new(&cmds).parse(&["serve"]).unwrap();
+        let port: u16 = parsed.flag_as("port").unwrap().unwrap();
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn test_flag_as_bool() {
+        let cmd = Command::builder("run")
+            .flag(Flag::builder("verbose").build().unwrap())
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parsed = Parser::new(&cmds).parse(&["run", "--verbose"]).unwrap();
+        let v: bool = parsed.flag_as("verbose").unwrap().unwrap();
+        assert!(v);
+    }
+
+    #[test]
+    fn test_arg_as_or_default() {
+        let cmd = Command::builder("run")
+            .argument(Argument::builder("count").build().unwrap())
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parsed = Parser::new(&cmds).parse(&["run"]).unwrap();
+        assert_eq!(parsed.arg_as_or("count", 42u32), 42u32);
+    }
+
+    #[test]
+    fn test_flag_as_or_default() {
+        let cmd = Command::builder("serve")
+            .flag(Flag::builder("workers").takes_value().build().unwrap())
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parsed = Parser::new(&cmds).parse(&["serve"]).unwrap();
+        assert_eq!(parsed.flag_as_or("workers", 4u32), 4u32);
     }
 }

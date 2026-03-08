@@ -21,6 +21,67 @@
 
 use crate::model::Command;
 
+/// A pluggable renderer for command help, Markdown docs, and disambiguation messages.
+///
+/// Implement this trait to fully customize how argot formats its output.
+/// Use [`Cli::with_renderer`] to inject your implementation.
+///
+/// A [`DefaultRenderer`] is provided that delegates to the module-level free
+/// functions ([`render_help`], [`render_markdown`], etc.).
+///
+/// # Examples
+///
+/// ```
+/// # use argot::{Command, render::Renderer};
+/// struct UppercaseRenderer;
+///
+/// impl Renderer for UppercaseRenderer {
+///     fn render_help(&self, command: &Command) -> String {
+///         argot::render_help(command).to_uppercase()
+///     }
+///     fn render_markdown(&self, command: &Command) -> String {
+///         argot::render_markdown(command)
+///     }
+///     fn render_subcommand_list(&self, commands: &[Command]) -> String {
+///         argot::render_subcommand_list(commands)
+///     }
+///     fn render_ambiguity(&self, input: &str, candidates: &[String]) -> String {
+///         argot::render_ambiguity(input, candidates)
+///     }
+/// }
+/// ```
+pub trait Renderer: Send + Sync {
+    /// Render a plain-text help page for a command.
+    fn render_help(&self, command: &crate::model::Command) -> String;
+    /// Render a Markdown documentation page for a command.
+    fn render_markdown(&self, command: &crate::model::Command) -> String;
+    /// Render a compact listing of multiple commands.
+    fn render_subcommand_list(&self, commands: &[crate::model::Command]) -> String;
+    /// Render a disambiguation message for an ambiguous command token.
+    fn render_ambiguity(&self, input: &str, candidates: &[String]) -> String;
+}
+
+/// The default renderer. Delegates to the module-level free functions.
+///
+/// This is used by [`crate::Cli`] unless overridden with [`crate::Cli::with_renderer`].
+#[derive(Debug, Default, Clone)]
+pub struct DefaultRenderer;
+
+impl Renderer for DefaultRenderer {
+    fn render_help(&self, command: &crate::model::Command) -> String {
+        render_help(command)
+    }
+    fn render_markdown(&self, command: &crate::model::Command) -> String {
+        render_markdown(command)
+    }
+    fn render_subcommand_list(&self, commands: &[crate::model::Command]) -> String {
+        render_subcommand_list(commands)
+    }
+    fn render_ambiguity(&self, input: &str, candidates: &[String]) -> String {
+        render_ambiguity(input, candidates)
+    }
+}
+
 /// Render a human-readable help page for a command.
 ///
 /// The output contains the following sections (each omitted when empty):
@@ -498,5 +559,41 @@ mod tests {
         };
         let msg = render_resolve_error(&err);
         assert!(msg.contains("list") && msg.contains("log"));
+    }
+
+    #[test]
+    fn test_default_renderer_delegates() {
+        let cmd = Command::builder("test")
+            .summary("A test command")
+            .build()
+            .unwrap();
+        let r = DefaultRenderer;
+        let help = r.render_help(&cmd);
+        assert!(help.contains("test"));
+        let md = r.render_markdown(&cmd);
+        assert!(md.starts_with("# test"));
+    }
+
+    #[test]
+    fn test_custom_renderer_via_cli() {
+        struct Upper;
+        impl Renderer for Upper {
+            fn render_help(&self, c: &Command) -> String {
+                render_help(c).to_uppercase()
+            }
+            fn render_markdown(&self, c: &Command) -> String {
+                render_markdown(c)
+            }
+            fn render_subcommand_list(&self, cs: &[Command]) -> String {
+                render_subcommand_list(cs)
+            }
+            fn render_ambiguity(&self, i: &str, cs: &[String]) -> String {
+                render_ambiguity(i, cs)
+            }
+        }
+        let cli = crate::cli::Cli::new(vec![Command::builder("ping").build().unwrap()])
+            .with_renderer(Upper);
+        // run with --help; output should be uppercase
+        let _ = cli.run(["--help"]);
     }
 }

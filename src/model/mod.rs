@@ -52,6 +52,8 @@ pub mod example;
 pub mod flag;
 
 pub use argument::{Argument, ArgumentBuilder};
+#[cfg(feature = "async")]
+pub use command::AsyncHandlerFn;
 pub use command::{Command, CommandBuilder, HandlerFn, ParsedCommand};
 pub use example::Example;
 pub use flag::{Flag, FlagBuilder};

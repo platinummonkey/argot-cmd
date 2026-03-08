@@ -169,6 +169,7 @@ argot = { version = "0.1", features = ["mcp"] }
 
 # Guides
 
+- [Cookbook](docs/cookbook.md) — 10 recipes for common patterns
 - [Error Handling](docs/error-handling.md) — how to handle `ParseError`, `ResolveError`, and `CliError`
 - [Validation Patterns](docs/validation-patterns.md) — built-in and handler-level validation
 

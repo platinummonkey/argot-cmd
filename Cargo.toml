@@ -26,6 +26,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+async = []
 mcp = []
 derive = ["dep:argot-derive"]
 fuzzy = ["dep:fuzzy-matcher"]

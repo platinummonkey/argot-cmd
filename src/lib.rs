@@ -85,6 +85,7 @@
 #![warn(missing_docs)]
 
 pub mod cli;
+pub mod middleware;
 pub mod model;
 pub mod parser;
 pub mod query;
@@ -92,15 +93,20 @@ pub mod render;
 pub mod resolver;
 
 pub use cli::{Cli, CliError};
+pub use middleware::Middleware;
 
 pub use model::{
     Argument, ArgumentBuilder, BuildError, Command, CommandBuilder, Example, Flag, FlagBuilder,
     HandlerFn, ParsedCommand,
 };
+
+#[cfg(feature = "async")]
+pub use model::AsyncHandlerFn;
 pub use parser::{ParseError, Parser};
 pub use query::{CommandEntry, QueryError, Registry};
 pub use render::{
     render_ambiguity, render_help, render_markdown, render_resolve_error, render_subcommand_list,
+    DefaultRenderer, Renderer,
 };
 pub use resolver::{ResolveError, Resolver};
 

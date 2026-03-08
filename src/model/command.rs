@@ -26,6 +26,44 @@ use super::{Argument, BuildError, Example, Flag};
 pub type HandlerFn =
     Arc<dyn for<'a> Fn(&ParsedCommand<'a>) -> Result<(), Box<dyn std::error::Error>> + Send + Sync>;
 
+/// An async handler function that can be registered on a [`Command`].
+///
+/// The function receives a [`ParsedCommand`] reference and returns a
+/// pinned, boxed future. Use [`Command::builder`] → [`CommandBuilder::async_handler`]
+/// to register one.
+///
+/// # Feature
+///
+/// Requires the `async` feature flag.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "async")] {
+/// use std::sync::Arc;
+/// use argot::AsyncHandlerFn;
+///
+/// let handler: AsyncHandlerFn = Arc::new(|parsed| Box::pin(async move {
+///     println!("async command: {}", parsed.command.canonical);
+///     Ok(())
+/// }));
+/// # }
+/// ```
+#[cfg(feature = "async")]
+pub type AsyncHandlerFn = std::sync::Arc<
+    dyn for<'a> Fn(
+            &'a ParsedCommand<'a>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send
+                    + 'a,
+            >,
+        > + Send
+        + Sync,
+>;
+
 /// The result of successfully parsing an invocation against a [`Command`].
 ///
 /// `ParsedCommand` borrows the matched [`Command`] from the registry (lifetime
@@ -200,6 +238,92 @@ impl<'a> ParsedCommand<'a> {
     pub fn has_flag(&self, name: &str) -> bool {
         self.flags.contains_key(name)
     }
+
+    /// Parse a positional argument as type `T` using [`std::str::FromStr`].
+    ///
+    /// Returns:
+    /// - `None` if the argument was not provided (absent from the map)
+    /// - `Some(Ok(value))` if parsing succeeded
+    /// - `Some(Err(e))` if the string was present but could not be parsed
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Argument, Command, Parser};
+    /// let cmd = Command::builder("resize")
+    ///     .argument(Argument::builder("width").required().build().unwrap())
+    ///     .build().unwrap();
+    /// let cmds = vec![cmd];
+    /// let parsed = Parser::new(&cmds).parse(&["resize", "1920"]).unwrap();
+    ///
+    /// let width: u32 = parsed.arg_as("width").unwrap().unwrap();
+    /// assert_eq!(width, 1920u32);
+    ///
+    /// assert!(parsed.arg_as::<u32>("missing").is_none());
+    /// ```
+    pub fn arg_as<T: std::str::FromStr>(&self, name: &str) -> Option<Result<T, T::Err>> {
+        self.args.get(name).map(|v| v.parse())
+    }
+
+    /// Parse a flag value as type `T` using [`std::str::FromStr`].
+    ///
+    /// Returns:
+    /// - `None` if the flag was not set (and has no default)
+    /// - `Some(Ok(value))` if parsing succeeded
+    /// - `Some(Err(e))` if the string was present but could not be parsed
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Flag, Parser};
+    /// let cmd = Command::builder("serve")
+    ///     .flag(Flag::builder("port").takes_value().default_value("8080").build().unwrap())
+    ///     .build().unwrap();
+    /// let cmds = vec![cmd];
+    /// let parsed = Parser::new(&cmds).parse(&["serve"]).unwrap();
+    ///
+    /// let port: u16 = parsed.flag_as("port").unwrap().unwrap();
+    /// assert_eq!(port, 8080u16);
+    /// ```
+    pub fn flag_as<T: std::str::FromStr>(&self, name: &str) -> Option<Result<T, T::Err>> {
+        self.flags.get(name).map(|v| v.parse())
+    }
+
+    /// Parse a positional argument as type `T`, returning a default if absent or unparseable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Argument, Command, Parser};
+    /// let cmd = Command::builder("run")
+    ///     .argument(Argument::builder("count").build().unwrap())
+    ///     .build().unwrap();
+    /// let cmds = vec![cmd];
+    /// let parsed = Parser::new(&cmds).parse(&["run"]).unwrap();
+    ///
+    /// assert_eq!(parsed.arg_as_or("count", 1u32), 1u32);
+    /// ```
+    pub fn arg_as_or<T: std::str::FromStr>(&self, name: &str, default: T) -> T {
+        self.arg_as(name).and_then(|r| r.ok()).unwrap_or(default)
+    }
+
+    /// Parse a flag value as type `T`, returning a default if absent or unparseable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Flag, Parser};
+    /// let cmd = Command::builder("serve")
+    ///     .flag(Flag::builder("workers").takes_value().build().unwrap())
+    ///     .build().unwrap();
+    /// let cmds = vec![cmd];
+    /// let parsed = Parser::new(&cmds).parse(&["serve"]).unwrap();
+    ///
+    /// assert_eq!(parsed.flag_as_or("workers", 4u32), 4u32);
+    /// ```
+    pub fn flag_as_or<T: std::str::FromStr>(&self, name: &str, default: T) -> T {
+        self.flag_as(name).and_then(|r| r.ok()).unwrap_or(default)
+    }
 }
 
 /// A command in the registry, potentially with subcommands.
@@ -282,6 +406,12 @@ pub struct Command {
     /// Skipped during JSON serialization/deserialization.
     #[serde(skip)]
     pub handler: Option<HandlerFn>,
+    /// Optional async runtime handler (feature: `async`).
+    ///
+    /// Skipped during JSON serialization.
+    #[cfg(feature = "async")]
+    #[serde(skip)]
+    pub async_handler: Option<AsyncHandlerFn>,
     /// Arbitrary application-defined metadata.
     ///
     /// Use this to attach structured data that is not covered by the built-in
@@ -300,8 +430,8 @@ pub struct Command {
 
 impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Command")
-            .field("canonical", &self.canonical)
+        let mut ds = f.debug_struct("Command");
+        ds.field("canonical", &self.canonical)
             .field("aliases", &self.aliases)
             .field("spellings", &self.spellings)
             .field("summary", &self.summary)
@@ -312,8 +442,13 @@ impl std::fmt::Debug for Command {
             .field("subcommands", &self.subcommands)
             .field("best_practices", &self.best_practices)
             .field("anti_patterns", &self.anti_patterns)
-            .field("handler", &self.handler.as_ref().map(|_| "<handler>"))
-            .field("extra", &self.extra)
+            .field("handler", &self.handler.as_ref().map(|_| "<handler>"));
+        #[cfg(feature = "async")]
+        ds.field(
+            "async_handler",
+            &self.async_handler.as_ref().map(|_| "<async_handler>"),
+        );
+        ds.field("extra", &self.extra)
             .field("exclusive_groups", &self.exclusive_groups)
             .finish()
     }
@@ -411,6 +546,8 @@ impl Command {
             best_practices: Vec::new(),
             anti_patterns: Vec::new(),
             handler: None,
+            #[cfg(feature = "async")]
+            async_handler: None,
             extra: HashMap::new(),
             exclusive_groups: Vec::new(),
         }
@@ -458,6 +595,8 @@ pub struct CommandBuilder {
     best_practices: Vec<String>,
     anti_patterns: Vec<String>,
     handler: Option<HandlerFn>,
+    #[cfg(feature = "async")]
+    async_handler: Option<AsyncHandlerFn>,
     extra: HashMap<String, serde_json::Value>,
     exclusive_groups: Vec<Vec<String>>,
 }
@@ -551,6 +690,33 @@ impl CommandBuilder {
     /// on success or a boxed error on failure.
     pub fn handler(mut self, h: HandlerFn) -> Self {
         self.handler = Some(h);
+        self
+    }
+
+    /// Register an async handler for this command (feature: `async`).
+    ///
+    /// The handler receives a [`ParsedCommand`] and returns a boxed future.
+    /// Use [`Cli::run_async`] to dispatch async handlers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "async")] {
+    /// use std::sync::Arc;
+    /// use argot::Command;
+    ///
+    /// let cmd = Command::builder("deploy")
+    ///     .async_handler(Arc::new(|parsed| Box::pin(async move {
+    ///         println!("deployed!");
+    ///         Ok(())
+    ///     })))
+    ///     .build()
+    ///     .unwrap();
+    /// # }
+    /// ```
+    #[cfg(feature = "async")]
+    pub fn async_handler(mut self, h: AsyncHandlerFn) -> Self {
+        self.async_handler = Some(h);
         self
     }
 
@@ -728,6 +894,8 @@ impl CommandBuilder {
             best_practices: self.best_practices,
             anti_patterns: self.anti_patterns,
             handler: self.handler,
+            #[cfg(feature = "async")]
+            async_handler: self.async_handler,
             extra: self.extra,
             exclusive_groups: self.exclusive_groups,
         })
