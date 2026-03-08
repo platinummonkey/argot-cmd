@@ -130,7 +130,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 out.anti_patterns.push(val.value());
             } else {
                 return Err(meta.error(format!(
-                    "unknown argot struct attribute `{}`",
+                    "unknown struct-level argot attribute `{}` — valid keys are: canonical, summary, description, alias, best_practice, anti_pattern",
                     meta.path
                         .get_ident()
                         .map(|i| i.to_string())
@@ -171,7 +171,7 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<Option<FieldAttrs>
                 out.default = Some(val.value());
             } else {
                 return Err(meta.error(format!(
-                    "unknown argot field attribute `{}`",
+                    "unknown field-level argot attribute `{}` — valid keys are: positional, flag, required, short, takes_value, description, default",
                     meta.path
                         .get_ident()
                         .map(|i| i.to_string())
@@ -220,10 +220,22 @@ fn snake_to_kebab(name: &str) -> String {
 fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
     let fields = match &input.data {
         Data::Struct(s) => &s.fields,
-        _ => {
+        Data::Enum(_) => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
-                "ArgotCommand can only be derived for structs",
+                format!(
+                    "`#[derive(ArgotCommand)]` cannot be used on enum `{}` — only structs are supported",
+                    input.ident
+                ),
+            ));
+        }
+        Data::Union(_) => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                format!(
+                    "`#[derive(ArgotCommand)]` cannot be used on union `{}` — only structs are supported",
+                    input.ident
+                ),
             ));
         }
     };
@@ -234,7 +246,10 @@ fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
         Fields::Unnamed(_) => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
-                "ArgotCommand does not support tuple structs; use named fields",
+                format!(
+                    "`{}` uses tuple fields — `#[derive(ArgotCommand)]` requires named fields (e.g., `struct Foo {{ name: String }}`)",
+                    input.ident
+                ),
             ));
         }
     };
@@ -273,6 +288,13 @@ fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
             Some(fa) => fa,
         };
 
+        if fa.positional && fa.flag {
+            return Err(syn::Error::new_spanned(
+                field_ident,
+                "a field cannot be both `positional` and `flag` — choose one",
+            ));
+        }
+
         if fa.positional {
             let arg_name = snake_to_kebab(&field_ident.to_string());
             let mut arg_builder = quote! { ::argot::Argument::builder(#arg_name) };
@@ -308,7 +330,10 @@ fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
         } else {
             return Err(syn::Error::new_spanned(
                 field_ident,
-                "argot field must include either `positional` or `flag`",
+                format!(
+                    "field `{}` has `#[argot(...)]` but is missing a kind — add `positional` or `flag`",
+                    field_ident
+                ),
             ));
         }
     }
@@ -348,5 +373,15 @@ mod tests {
         assert_eq!(snake_to_kebab("dry_run"), "dry-run");
         assert_eq!(snake_to_kebab("output"), "output");
         assert_eq!(snake_to_kebab("env"), "env");
+    }
+
+    #[test]
+    fn test_camel_to_kebab_single_word() {
+        assert_eq!(camel_to_kebab("Deploy"), "deploy");
+    }
+
+    #[test]
+    fn test_snake_to_kebab_multi_word() {
+        assert_eq!(snake_to_kebab("dry_run_mode"), "dry-run-mode");
     }
 }

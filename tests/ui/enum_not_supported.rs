@@ -1,4 +1,4 @@
-//! Expected error: "ArgotCommand can only be derived for structs"
+//! Expected error: "`#[derive(ArgotCommand)]` cannot be used on enum `MyEnum` — only structs are supported"
 use argot::ArgotCommand;
 
 #[derive(ArgotCommand)]

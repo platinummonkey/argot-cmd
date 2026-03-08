@@ -167,6 +167,13 @@ argot = { version = "0.1", features = ["mcp"] }
 
 ---
 
+# Guides
+
+- [Error Handling](docs/error-handling.md) — how to handle `ParseError`, `ResolveError`, and `CliError`
+- [Validation Patterns](docs/validation-patterns.md) — built-in and handler-level validation
+
+---
+
 # Design Principles
 
 - **Single Source of Truth** — the command model drives all outputs

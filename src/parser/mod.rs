@@ -121,6 +121,14 @@ pub enum ParseError {
         /// The allowed values.
         choices: Vec<String>,
     },
+    /// Two or more mutually exclusive flags were provided in the same invocation.
+    ///
+    /// The `flags` field lists the conflicting flags (with `--` prefix).
+    #[error("flags {flags:?} are mutually exclusive — provide at most one")]
+    MutuallyExclusive {
+        /// The conflicting flag names that were all set (with `--` prefix).
+        flags: Vec<String>,
+    },
 }
 
 /// Parses raw argument slices against a slice of registered [`Command`]s.
@@ -483,6 +491,18 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
+            }
+        }
+
+        // Enforce mutual exclusivity groups.
+        for group in &cmd.exclusive_groups {
+            let set: Vec<String> = group
+                .iter()
+                .filter(|name| flags.contains_key(*name))
+                .map(|name| format!("--{}", name))
+                .collect();
+            if set.len() > 1 {
+                return Err(ParseError::MutuallyExclusive { flags: set });
             }
         }
 
@@ -1255,6 +1275,72 @@ mod tests {
         ));
 
         std::env::remove_var(var);
+    }
+
+    #[test]
+    fn test_exclusive_flags_one_set_ok() {
+        let cmd = Command::builder("export")
+            .flag(Flag::builder("json").build().unwrap())
+            .flag(Flag::builder("yaml").build().unwrap())
+            .exclusive(["json", "yaml"])
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parser = Parser::new(&cmds);
+        let parsed = parser.parse(&["export", "--json"]).unwrap();
+        assert_eq!(parsed.flags["json"], "true");
+    }
+
+    #[test]
+    fn test_exclusive_flags_two_set_errors() {
+        let cmd = Command::builder("export")
+            .flag(Flag::builder("json").build().unwrap())
+            .flag(Flag::builder("yaml").build().unwrap())
+            .exclusive(["json", "yaml"])
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parser = Parser::new(&cmds);
+        assert!(matches!(
+            parser.parse(&["export", "--json", "--yaml"]),
+            Err(ParseError::MutuallyExclusive { .. })
+        ));
+    }
+
+    #[test]
+    fn test_exclusive_neither_set_ok() {
+        let cmd = Command::builder("export")
+            .flag(Flag::builder("json").build().unwrap())
+            .flag(Flag::builder("yaml").build().unwrap())
+            .exclusive(["json", "yaml"])
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parser = Parser::new(&cmds);
+        assert!(parser.parse(&["export"]).is_ok());
+    }
+
+    #[test]
+    fn test_exclusive_group_unknown_flag_build_error() {
+        use crate::model::BuildError;
+        let result = Command::builder("cmd")
+            .flag(Flag::builder("json").build().unwrap())
+            .exclusive(["json", "nonexistent"])
+            .build();
+        assert!(matches!(
+            result,
+            Err(BuildError::ExclusiveGroupUnknownFlag(_))
+        ));
+    }
+
+    #[test]
+    fn test_exclusive_group_too_small_build_error() {
+        use crate::model::BuildError;
+        let result = Command::builder("cmd")
+            .flag(Flag::builder("json").build().unwrap())
+            .exclusive(["json"])
+            .build();
+        assert!(matches!(result, Err(BuildError::ExclusiveGroupTooSmall)));
     }
 }
 

@@ -38,6 +38,29 @@ use thiserror::Error;
 
 use crate::model::{Command, Example};
 
+/// A command paired with its canonical path from the registry root.
+///
+/// Produced by [`Registry::iter_all_recursive`].
+#[derive(Debug, Clone)]
+pub struct CommandEntry<'a> {
+    /// Canonical names from root to this command, e.g. `["remote", "add"]`.
+    pub path: Vec<String>,
+    /// The command at this path.
+    pub command: &'a Command,
+}
+
+impl<'a> CommandEntry<'a> {
+    /// The canonical name of this command (last element of `path`).
+    pub fn name(&self) -> &str {
+        self.path.last().map(String::as_str).unwrap_or("")
+    }
+
+    /// The full dotted path string, e.g. `"remote.add"`.
+    pub fn path_str(&self) -> String {
+        self.path.join(".")
+    }
+}
+
 /// Errors produced by [`Registry`] methods.
 #[derive(Debug, Error)]
 pub enum QueryError {
@@ -317,6 +340,52 @@ impl Registry {
     pub fn to_json(&self) -> Result<String, QueryError> {
         serde_json::to_string_pretty(&self.commands).map_err(QueryError::Serialization)
     }
+
+    /// Iterate over every command in the tree depth-first, including all
+    /// nested subcommands at any depth.
+    ///
+    /// Each entry carries the [`CommandEntry::path`] (canonical names from the
+    /// registry root to the command) and a reference to the [`Command`].
+    ///
+    /// Top-level commands are yielded before their subcommands. Within each
+    /// level, commands appear in their registration order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Registry};
+    /// let registry = Registry::new(vec![
+    ///     Command::builder("remote")
+    ///         .subcommand(Command::builder("add").build().unwrap())
+    ///         .subcommand(Command::builder("remove").build().unwrap())
+    ///         .build()
+    ///         .unwrap(),
+    ///     Command::builder("status").build().unwrap(),
+    /// ]);
+    ///
+    /// let all: Vec<_> = registry.iter_all_recursive();
+    /// let names: Vec<String> = all.iter().map(|e| e.path_str()).collect();
+    ///
+    /// assert_eq!(names, ["remote", "remote.add", "remote.remove", "status"]);
+    /// ```
+    pub fn iter_all_recursive(&self) -> Vec<CommandEntry<'_>> {
+        let mut out = Vec::new();
+        for cmd in &self.commands {
+            collect_recursive(cmd, vec![], &mut out);
+        }
+        out
+    }
+}
+
+fn collect_recursive<'a>(cmd: &'a Command, mut path: Vec<String>, out: &mut Vec<CommandEntry<'a>>) {
+    path.push(cmd.canonical.clone());
+    out.push(CommandEntry {
+        path: path.clone(),
+        command: cmd,
+    });
+    for sub in &cmd.subcommands {
+        collect_recursive(sub, path.clone(), out);
+    }
 }
 
 #[cfg(test)]
@@ -429,5 +498,77 @@ mod tests {
         assert!(json.contains("remote"));
         assert!(json.contains("list"));
         let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_iter_all_recursive_flat() {
+        let r = Registry::new(vec![
+            Command::builder("a").build().unwrap(),
+            Command::builder("b").build().unwrap(),
+        ]);
+        let entries = r.iter_all_recursive();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path_str(), "a");
+        assert_eq!(entries[1].path_str(), "b");
+    }
+
+    #[test]
+    fn test_iter_all_recursive_nested() {
+        let registry = Registry::new(vec![
+            Command::builder("remote")
+                .subcommand(Command::builder("add").build().unwrap())
+                .subcommand(Command::builder("remove").build().unwrap())
+                .build()
+                .unwrap(),
+            Command::builder("status").build().unwrap(),
+        ]);
+
+        let names: Vec<String> = registry
+            .iter_all_recursive()
+            .iter()
+            .map(|e| e.path_str())
+            .collect();
+
+        assert_eq!(names, ["remote", "remote.add", "remote.remove", "status"]);
+    }
+
+    #[test]
+    fn test_iter_all_recursive_deep_nesting() {
+        let leaf = Command::builder("blue-green").build().unwrap();
+        let mid = Command::builder("strategy")
+            .subcommand(leaf)
+            .build()
+            .unwrap();
+        let top = Command::builder("deploy").subcommand(mid).build().unwrap();
+        let r = Registry::new(vec![top]);
+
+        let names: Vec<String> = r
+            .iter_all_recursive()
+            .iter()
+            .map(|e| e.path_str())
+            .collect();
+
+        assert_eq!(
+            names,
+            ["deploy", "deploy.strategy", "deploy.strategy.blue-green"]
+        );
+    }
+
+    #[test]
+    fn test_iter_all_recursive_entry_helpers() {
+        let registry = Registry::new(vec![Command::builder("remote")
+            .subcommand(Command::builder("add").build().unwrap())
+            .build()
+            .unwrap()]);
+        let entries = registry.iter_all_recursive();
+        assert_eq!(entries[1].name(), "add");
+        assert_eq!(entries[1].path, vec!["remote", "add"]);
+        assert_eq!(entries[1].path_str(), "remote.add");
+    }
+
+    #[test]
+    fn test_iter_all_recursive_empty() {
+        let r = Registry::new(vec![]);
+        assert!(r.iter_all_recursive().is_empty());
     }
 }

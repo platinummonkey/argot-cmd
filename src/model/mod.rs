@@ -108,4 +108,12 @@ pub enum BuildError {
     /// A flag's `choices` list is empty, which would reject all values.
     #[error("flag `{0}` has an empty choices list")]
     EmptyChoices(String),
+
+    /// A mutual-exclusivity group contains fewer than two flag names.
+    #[error("exclusive group must contain at least two flags")]
+    ExclusiveGroupTooSmall,
+
+    /// A flag referenced in a mutual-exclusivity group is not defined on the command.
+    #[error("flag `{0}` in exclusive group is not defined on this command")]
+    ExclusiveGroupUnknownFlag(String),
 }

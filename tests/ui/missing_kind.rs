@@ -1,4 +1,4 @@
-//! Expected error: "argot field must include either `positional` or `flag`"
+//! Expected error: "field `field` has `#[argot(...)]` but is missing a kind — add `positional` or `flag`"
 use argot::ArgotCommand;
 
 #[derive(ArgotCommand)]

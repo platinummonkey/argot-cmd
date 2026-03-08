@@ -290,6 +290,12 @@ pub struct Command {
     /// Serialized to JSON as an object; absent from output when empty.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub extra: HashMap<String, serde_json::Value>,
+    /// Groups of mutually exclusive flag names.
+    ///
+    /// At most one flag in each group may be provided in a single invocation.
+    /// Validated at build time (flags must exist) and enforced at parse time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusive_groups: Vec<Vec<String>>,
 }
 
 impl std::fmt::Debug for Command {
@@ -308,6 +314,7 @@ impl std::fmt::Debug for Command {
             .field("anti_patterns", &self.anti_patterns)
             .field("handler", &self.handler.as_ref().map(|_| "<handler>"))
             .field("extra", &self.extra)
+            .field("exclusive_groups", &self.exclusive_groups)
             .finish()
     }
 }
@@ -326,6 +333,7 @@ impl PartialEq for Command {
             && self.best_practices == other.best_practices
             && self.anti_patterns == other.anti_patterns
             && self.extra == other.extra
+            && self.exclusive_groups == other.exclusive_groups
     }
 }
 
@@ -354,6 +362,7 @@ impl std::hash::Hash for Command {
                 self.extra[k].to_string().hash(state);
             }
         }
+        self.exclusive_groups.hash(state);
     }
 }
 
@@ -403,6 +412,7 @@ impl Command {
             anti_patterns: Vec::new(),
             handler: None,
             extra: HashMap::new(),
+            exclusive_groups: Vec::new(),
         }
     }
 
@@ -449,6 +459,7 @@ pub struct CommandBuilder {
     anti_patterns: Vec<String>,
     handler: Option<HandlerFn>,
     extra: HashMap<String, serde_json::Value>,
+    exclusive_groups: Vec<Vec<String>>,
 }
 
 impl CommandBuilder {
@@ -563,6 +574,37 @@ impl CommandBuilder {
         self
     }
 
+    /// Declare a group of mutually exclusive flags.
+    ///
+    /// At most one flag from `flags` may be provided in a single invocation.
+    /// The parser returns [`crate::ParseError::MutuallyExclusive`] if two or
+    /// more flags from the same group are present.
+    ///
+    /// # Panics (at build time via [`BuildError`])
+    ///
+    /// [`CommandBuilder::build`] returns an error if:
+    /// - The group has fewer than 2 flags.
+    /// - Any flag name in the group is not defined on this command.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Flag};
+    /// let cmd = Command::builder("export")
+    ///     .flag(Flag::builder("json").build().unwrap())
+    ///     .flag(Flag::builder("yaml").build().unwrap())
+    ///     .flag(Flag::builder("csv").build().unwrap())
+    ///     .exclusive(["json", "yaml", "csv"])
+    ///     .build()
+    ///     .unwrap();
+    /// assert_eq!(cmd.exclusive_groups.len(), 1);
+    /// ```
+    pub fn exclusive(mut self, flags: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.exclusive_groups
+            .push(flags.into_iter().map(Into::into).collect());
+        self
+    }
+
     /// Consume the builder and return a [`Command`].
     ///
     /// # Errors
@@ -661,6 +703,18 @@ impl CommandBuilder {
             }
         }
 
+        // 9. Mutual exclusivity group validation
+        for group in &self.exclusive_groups {
+            if group.len() < 2 {
+                return Err(BuildError::ExclusiveGroupTooSmall);
+            }
+            for flag_name in group {
+                if !self.flags.iter().any(|f| &f.name == flag_name) {
+                    return Err(BuildError::ExclusiveGroupUnknownFlag(flag_name.clone()));
+                }
+            }
+        }
+
         Ok(Command {
             canonical: self.canonical,
             aliases: self.aliases,
@@ -675,6 +729,7 @@ impl CommandBuilder {
             anti_patterns: self.anti_patterns,
             handler: self.handler,
             extra: self.extra,
+            exclusive_groups: self.exclusive_groups,
         })
     }
 }

@@ -1,5 +1,4 @@
-//! Expected error: "argot field must include either `positional` or `flag`"
-//! (currently derives positional when both are set — a bug to fix)
+//! Expected error: "a field cannot be both `positional` and `flag` — choose one"
 use argot::ArgotCommand;
 
 #[derive(ArgotCommand)]
