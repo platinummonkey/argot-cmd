@@ -119,30 +119,75 @@ Add Argot to your `Cargo.toml`:
 argot = "0.1"
 ```
 
-Define a command:
+Define a command and run it:
 
 ```rust
-use argot::{Command, Example};
+use std::sync::Arc;
+use argot::{Argument, Cli, Command, Flag};
 
 let deploy = Command::builder("deploy")
-    .aliases(&["release", "ship"])
     .summary("Deploy a service to an environment")
-    .example(Example::new("deploy api --env staging", "Deploy API service to staging"))
-    .best_practice("Deploy to staging before production")
-    .anti_pattern("Deploy directly to production without validation")
-    .build();
-```
-
-Run it:
-
-```rust
-use argot::Cli;
+    .argument(Argument::builder("env").required().description("Target environment").build().unwrap())
+    .flag(Flag::builder("dry-run").description("Simulate without applying changes").build().unwrap())
+    .handler(Arc::new(|parsed| {
+        let env = parsed.arg("env").unwrap_or("dev");
+        let dry = parsed.flag_bool("dry-run");
+        println!("Deploying to {} (dry_run={})", env, dry);
+        Ok(())
+    }))
+    .build()
+    .unwrap();
 
 fn main() {
-    let cli = Cli::new(vec![deploy]);
-    cli.run();
+    Cli::new(vec![deploy])
+        .app_name("mytool")
+        .version("1.0.0")
+        .run_env_args_and_exit();
 }
 ```
+
+---
+
+## Agent Discovery
+
+Argot is designed so AI agents can discover your tool's commands without scraping help text.
+
+Enable the built-in `query` command with `with_query_support()`:
+
+```rust
+Cli::new(commands)
+    .with_query_support()
+    .run_env_args_and_exit();
+```
+
+Agents can then call:
+
+```
+# List all commands as JSON
+mytool query commands
+
+# Get structured metadata for one command
+mytool query deploy
+mytool query deploy --json
+```
+
+The output is the full serialized `Command` struct including arguments, flags, examples, best practices, and anti-patterns — everything an agent needs to use a command correctly.
+
+---
+
+### Mutually exclusive flags
+
+```rust
+Command::builder("export")
+    .flag(Flag::builder("json").build().unwrap())
+    .flag(Flag::builder("yaml").build().unwrap())
+    .flag(Flag::builder("csv").build().unwrap())
+    .exclusive(["json", "yaml", "csv"])   // at most one may be set
+    .build()
+    .unwrap()
+```
+
+Providing more than one flag from the group returns `ParseError::MutuallyExclusive { flags }`.
 
 ---
 
@@ -176,6 +221,8 @@ argot = { version = "0.1", features = ["mcp"] }
 - [Cookbook](docs/cookbook.md) — 10 recipes for common patterns
 - [Error Handling](docs/error-handling.md) — how to handle `ParseError`, `ResolveError`, and `CliError`
 - [Validation Patterns](docs/validation-patterns.md) — built-in and handler-level validation
+- [Middleware Guide](docs/middleware-guide.md) — hooks for logging, auditing, and request interception
+- [MCP Setup](docs/mcp-setup.md) — exposing commands to AI agents via Model Context Protocol
 
 ---
 

@@ -30,6 +30,27 @@ pub trait Middleware: Send + Sync {
     /// Called after a successful parse, before the handler is invoked.
     ///
     /// Return `Err(...)` to abort dispatch with a [`crate::cli::CliError::Handler`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use argot::middleware::Middleware;
+    /// use argot::ParsedCommand;
+    ///
+    /// struct RateLimiter { max: usize }
+    ///
+    /// impl Middleware for RateLimiter {
+    ///     fn before_dispatch(
+    ///         &self,
+    ///         parsed: &ParsedCommand<'_>,
+    ///     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///         // Allow all commands in this example.
+    ///         // A real implementation would check a counter.
+    ///         println!("dispatching: {}", parsed.command.canonical);
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
     fn before_dispatch(
         &self,
         _parsed: &ParsedCommand<'_>,
@@ -38,6 +59,28 @@ pub trait Middleware: Send + Sync {
     }
 
     /// Called after the handler returns (whether `Ok` or `Err`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use argot::middleware::Middleware;
+    /// use argot::ParsedCommand;
+    ///
+    /// struct AuditLog;
+    ///
+    /// impl Middleware for AuditLog {
+    ///     fn after_dispatch(
+    ///         &self,
+    ///         parsed: &ParsedCommand<'_>,
+    ///         result: &Result<(), Box<dyn std::error::Error + Send + Sync>>,
+    ///     ) {
+    ///         match result {
+    ///             Ok(()) => println!("✓ {}", parsed.command.canonical),
+    ///             Err(e) => eprintln!("✗ {}: {}", parsed.command.canonical, e),
+    ///         }
+    ///     }
+    /// }
+    /// ```
     fn after_dispatch(
         &self,
         _parsed: &ParsedCommand<'_>,
@@ -46,5 +89,20 @@ pub trait Middleware: Send + Sync {
     }
 
     /// Called when `Parser::parse` returns an error, before it is surfaced to the caller.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use argot::middleware::Middleware;
+    /// use argot::parser::ParseError;
+    ///
+    /// struct ErrorLogger;
+    ///
+    /// impl Middleware for ErrorLogger {
+    ///     fn on_parse_error(&self, err: &ParseError) {
+    ///         eprintln!("parse failed: {}", err);
+    ///     }
+    /// }
+    /// ```
     fn on_parse_error(&self, _error: &ParseError) {}
 }

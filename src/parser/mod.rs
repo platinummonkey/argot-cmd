@@ -336,12 +336,12 @@ impl<'a> Parser<'a> {
                         if flag_def.takes_value {
                             // Accumulate into JSON array
                             let new_val = match flags.get(&flag_def.name) {
-                                None => serde_json::to_string(&[&val]).unwrap(),
+                                None => serde_json::to_string(&[&val]).expect("serde_json serialization of &[&str] is infallible for simple string types"),
                                 Some(existing) => {
                                     let mut arr: Vec<String> = serde_json::from_str(existing)
                                         .unwrap_or_else(|_| vec![existing.clone()]);
                                     arr.push(val);
-                                    serde_json::to_string(&arr).unwrap()
+                                    serde_json::to_string(&arr).expect("serde_json serialization of Vec<String> is infallible")
                                 }
                             };
                             flags.insert(flag_def.name.clone(), new_val);
@@ -392,12 +392,12 @@ impl<'a> Parser<'a> {
                         // Repeatable flag accumulation
                         if flag_def.repeatable {
                             let new_val = match flags.get(&flag_def.name) {
-                                None => serde_json::to_string(&[&val]).unwrap(),
+                                None => serde_json::to_string(&[&val]).expect("serde_json serialization of &[&str] is infallible for simple string types"),
                                 Some(existing) => {
                                     let mut arr: Vec<String> = serde_json::from_str(existing)
                                         .unwrap_or_else(|_| vec![existing.clone()]);
                                     arr.push(val);
-                                    serde_json::to_string(&arr).unwrap()
+                                    serde_json::to_string(&arr).expect("serde_json serialization of Vec<String> is infallible")
                                 }
                             };
                             flags.insert(flag_def.name.clone(), new_val);
@@ -418,7 +418,8 @@ impl<'a> Parser<'a> {
                         if let Some(rest) = value {
                             if !rest.is_empty() {
                                 let mut chars = rest.chars();
-                                let next_c = chars.next().unwrap();
+                                let next_c =
+                                    chars.next().expect("guarded by is_empty() check above");
                                 let remainder: String = chars.collect();
                                 queue.push_front(Token::ShortFlag {
                                     name: next_c,
@@ -447,7 +448,9 @@ impl<'a> Parser<'a> {
                     let json_val = serde_json::to_string(
                         &values.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     )
-                    .unwrap();
+                    .expect(
+                        "serde_json serialization of &[&str] is infallible for simple string types",
+                    );
                     args.insert(arg_def.name.clone(), json_val);
                 } else if let Some(default) = &arg_def.default {
                     args.insert(arg_def.name.clone(), default.clone());

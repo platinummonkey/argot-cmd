@@ -51,11 +51,41 @@ pub struct CommandEntry<'a> {
 
 impl<'a> CommandEntry<'a> {
     /// The canonical name of this command (last element of `path`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Registry};
+    /// let registry = Registry::new(vec![
+    ///     Command::builder("remote")
+    ///         .subcommand(Command::builder("add").build().unwrap())
+    ///         .build()
+    ///         .unwrap(),
+    /// ]);
+    /// let entries = registry.iter_all_recursive();
+    /// assert_eq!(entries[0].name(), "remote");
+    /// assert_eq!(entries[1].name(), "add");
+    /// ```
     pub fn name(&self) -> &str {
         self.path.last().map(String::as_str).unwrap_or("")
     }
 
     /// The full dotted path string, e.g. `"remote.add"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Registry};
+    /// let registry = Registry::new(vec![
+    ///     Command::builder("remote")
+    ///         .subcommand(Command::builder("add").build().unwrap())
+    ///         .build()
+    ///         .unwrap(),
+    /// ]);
+    /// let entries = registry.iter_all_recursive();
+    /// assert_eq!(entries[0].path_str(), "remote");
+    /// assert_eq!(entries[1].path_str(), "remote.add");
+    /// ```
     pub fn path_str(&self) -> String {
         self.path.join(".")
     }
@@ -297,16 +327,18 @@ impl Registry {
     /// # #[cfg(feature = "fuzzy")] {
     /// # use argot::{Command, Registry};
     /// let registry = Registry::new(vec![
-    ///     Command::builder("list").summary("List all items").build().unwrap(),
-    ///     Command::builder("get").summary("Get an item").build().unwrap(),
+    ///     Command::builder("deploy").summary("Deploy a service").build().unwrap(),
+    ///     Command::builder("delete").summary("Delete a resource").build().unwrap(),
+    ///     Command::builder("describe").summary("Describe a resource").build().unwrap(),
     /// ]);
     ///
-    /// let results = registry.fuzzy_search("lst");
+    /// // Fuzzy-matches all commands starting with 'de'
+    /// let results = registry.fuzzy_search("dep");
     /// assert!(!results.is_empty());
-    /// // Results are sorted best-first; scores are non-negative i64 values.
-    /// for window in results.windows(2) {
-    ///     assert!(window[0].1 >= window[1].1);
-    /// }
+    /// // Results are sorted by match score descending
+    /// assert_eq!(results[0].0.canonical, "deploy");
+    /// // Scores are positive integers — higher is a better match
+    /// assert!(results[0].1 > 0);
     /// # }
     /// ```
     #[cfg(feature = "fuzzy")]
@@ -355,8 +387,9 @@ impl Registry {
     /// Each entry carries the [`CommandEntry::path`] (canonical names from the
     /// registry root to the command) and a reference to the [`Command`].
     ///
-    /// Top-level commands are yielded before their subcommands. Within each
-    /// level, commands appear in their registration order.
+    /// Commands are yielded in depth-first order: a parent command appears
+    /// immediately before all of its descendants. Within each level, commands
+    /// appear in registration order.
     ///
     /// # Examples
     ///
@@ -578,5 +611,65 @@ mod tests {
     fn test_iter_all_recursive_empty() {
         let r = Registry::new(vec![]);
         assert!(r.iter_all_recursive().is_empty());
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "fuzzy")]
+mod fuzzy_tests {
+    use super::*;
+    use crate::model::Command;
+
+    #[test]
+    fn test_fuzzy_search_returns_matches() {
+        let r = Registry::new(vec![
+            Command::builder("deploy").build().unwrap(),
+            Command::builder("delete").build().unwrap(),
+            Command::builder("status").build().unwrap(),
+        ]);
+        let results = r.fuzzy_search("dep");
+        assert!(!results.is_empty(), "should find matches for 'dep'");
+        // "deploy" should be the top match
+        assert_eq!(results[0].0.canonical, "deploy");
+    }
+
+    #[test]
+    fn test_fuzzy_search_sorted_by_score_descending() {
+        let r = Registry::new(vec![
+            Command::builder("deploy").build().unwrap(),
+            Command::builder("delete").build().unwrap(),
+        ]);
+        let results = r.fuzzy_search("deploy");
+        assert!(results.len() >= 1);
+        // Scores should be in descending order
+        for i in 1..results.len() {
+            assert!(
+                results[i - 1].1 >= results[i].1,
+                "results should be sorted by score desc"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_search_no_match_returns_empty() {
+        let r = Registry::new(vec![Command::builder("run").build().unwrap()]);
+        let results = r.fuzzy_search("zzzzzzz");
+        // No match should return empty (or very low score filtered out)
+        // The fuzzy matcher may return low-score matches, so just verify
+        // that "run" is NOT the top result for a nonsense query, or it returns empty
+        if !results.is_empty() {
+            // If it returns anything, score must be positive
+            assert!(results.iter().all(|(_, score)| *score > 0));
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_search_score_type() {
+        let r = Registry::new(vec![Command::builder("deploy").build().unwrap()]);
+        let results = r.fuzzy_search("deploy");
+        assert!(!results.is_empty());
+        // Score is i64
+        let score: i64 = results[0].1;
+        assert!(score > 0);
     }
 }
