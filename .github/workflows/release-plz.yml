@@ -23,7 +23,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run release-plz release
-        uses: release-plz/[email protected]
+        uses: release-plz/action@v0.5.128
         with:
           command: release
         env:
@@ -50,7 +50,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run release-plz release-pr
-        uses: release-plz/[email protected]
+        uses: release-plz/action@v0.5.128
         with:
           command: release-pr
         env:
