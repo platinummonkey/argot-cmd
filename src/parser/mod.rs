@@ -1345,6 +1345,195 @@ mod tests {
             .build();
         assert!(matches!(result, Err(BuildError::ExclusiveGroupTooSmall)));
     }
+
+    // -----------------------------------------------------------------------
+    // Additional edge-case tests for improved coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_subcommand_walk_breaks_on_flag_token() {
+        // If the next token after entering a parent command is a flag (not a word),
+        // the subcommand loop should break and treat remaining tokens as flags.
+        let cmds = vec![Command::builder("git")
+            .subcommand(Command::builder("status").build().unwrap())
+            .flag(Flag::builder("verbose").build().unwrap())
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        // "--verbose" comes before any subcommand token — should break the loop
+        // and bind "--verbose" as a flag on "git" (not enter subcommand)
+        let result = parser.parse(&["git", "--verbose"]);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let parsed = result.unwrap();
+        assert_eq!(parsed.command.canonical, "git");
+        assert_eq!(parsed.flags.get("verbose").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn test_no_negation_with_value_is_unknown_flag() {
+        // --no-verbose=true is invalid (negation cannot carry a value)
+        let cmds = vec![Command::builder("cmd")
+            .flag(Flag::builder("verbose").build().unwrap())
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        let result = parser.parse(&["cmd", "--no-verbose=true"]);
+        assert!(
+            matches!(result, Err(ParseError::UnknownFlag(_))),
+            "expected UnknownFlag for --no-<name>=value, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_long_flag_missing_value_non_word_token() {
+        // --output followed by another flag (not a word) → FlagMissingValue
+        let cmds = vec![Command::builder("cmd")
+            .flag(Flag::builder("output").takes_value().build().unwrap())
+            .flag(Flag::builder("verbose").build().unwrap())
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        let result = parser.parse(&["cmd", "--output", "--verbose"]);
+        assert!(
+            matches!(result, Err(ParseError::FlagMissingValue { .. })),
+            "expected FlagMissingValue, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_short_flag_takes_value_missing_value() {
+        // -o with takes_value but no next token → FlagMissingValue
+        let cmds = vec![Command::builder("cmd")
+            .flag(
+                Flag::builder("output")
+                    .short('o')
+                    .takes_value()
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        // -o at end of argv with no value
+        let result = parser.parse(&["cmd", "-o"]);
+        assert!(
+            matches!(result, Err(ParseError::FlagMissingValue { .. })),
+            "expected FlagMissingValue for short flag with no value, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_short_flag_takes_value_invalid_choice() {
+        let cmds = vec![Command::builder("cmd")
+            .flag(
+                Flag::builder("format")
+                    .short('f')
+                    .takes_value()
+                    .choices(["json", "yaml"])
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        let result = parser.parse(&["cmd", "-f", "xml"]);
+        assert!(
+            matches!(result, Err(ParseError::InvalidChoice { .. })),
+            "expected InvalidChoice for invalid short flag value, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_short_flag_repeatable_value() {
+        let cmds = vec![Command::builder("run")
+            .flag(
+                Flag::builder("tag")
+                    .short('t')
+                    .takes_value()
+                    .repeatable()
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        // -t alpha -t beta via short form
+        let parsed = parser.parse(&["run", "-t", "alpha", "-t", "beta"]).unwrap();
+        let tags: Vec<String> = serde_json::from_str(&parsed.flags["tag"]).unwrap();
+        assert_eq!(tags, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_optional_arg_with_default_applied() {
+        // Non-required arg with default: if not supplied, default is used
+        let cmds = vec![Command::builder("serve")
+            .argument(
+                Argument::builder("host")
+                    .default_value("localhost")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        let parsed = parser.parse(&["serve"]).unwrap();
+        assert_eq!(
+            parsed.args.get("host").map(String::as_str),
+            Some("localhost")
+        );
+    }
+
+    #[test]
+    fn test_long_flag_repeatable_boolean() {
+        // Repeatable boolean flag via long form --verbose multiple times
+        let cmds = vec![Command::builder("run")
+            .flag(Flag::builder("verbose").repeatable().build().unwrap())
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        let parsed = parser
+            .parse(&["run", "--verbose", "--verbose", "--verbose"])
+            .unwrap();
+        assert_eq!(parsed.flags["verbose"], "3");
+    }
+
+    #[test]
+    fn test_long_flag_repeatable_value() {
+        // Repeatable value flag accumulates into JSON array via long form
+        let cmds = vec![Command::builder("run")
+            .flag(
+                Flag::builder("tag")
+                    .takes_value()
+                    .repeatable()
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()];
+        let parser = Parser::new(&cmds);
+        // Second occurrence appends to the existing JSON array
+        let parsed = parser
+            .parse(&["run", "--tag=first", "--tag=second"])
+            .unwrap();
+        let tags: Vec<String> = serde_json::from_str(&parsed.flags["tag"]).unwrap();
+        assert_eq!(tags, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn test_unknown_short_flag_error() {
+        let cmds = vec![Command::builder("cmd").build().unwrap()];
+        let parser = Parser::new(&cmds);
+        let result = parser.parse(&["cmd", "-z"]);
+        assert!(
+            matches!(result, Err(ParseError::UnknownFlag(_))),
+            "expected UnknownFlag for unknown short flag, got {:?}",
+            result
+        );
+    }
 }
 
 #[cfg(test)]

@@ -1124,6 +1124,28 @@ mod tests {
         assert!(!help.contains("deply"), "spelling must not appear in help");
     }
 
+    #[test]
+    fn test_semantic_aliases_not_in_help_output() {
+        let cmd = Command::builder("deploy")
+            .alias("d")
+            .semantic_alias("release to production")
+            .semantic_alias("push to environment")
+            .summary("Deploy a service")
+            .build()
+            .unwrap();
+
+        let help = render_help(&cmd);
+        assert!(help.contains("d"), "alias should appear in help");
+        assert!(
+            !help.contains("release to production"),
+            "semantic alias must not appear in help"
+        );
+        assert!(
+            !help.contains("push to environment"),
+            "semantic alias must not appear in help"
+        );
+    }
+
     fn docs_registry() -> crate::query::Registry {
         use crate::query::Registry;
         Registry::new(vec![
@@ -1194,5 +1216,196 @@ mod tests {
         assert!(docs.contains("# Commands"));
         assert!(docs.contains("deploy"));
         assert!(docs.contains("status"));
+    }
+
+    #[test]
+    fn test_render_completion_zsh_with_flags_and_args() {
+        use crate::query::Registry;
+        let reg = Registry::new(vec![
+            Command::builder("deploy")
+                .summary("Deploy")
+                .flag(
+                    Flag::builder("env")
+                        .takes_value()
+                        .description("target env")
+                        .build()
+                        .unwrap(),
+                )
+                .flag(Flag::builder("dry-run").description("simulate").build().unwrap())
+                .argument(Argument::builder("service").required().build().unwrap())
+                .build()
+                .unwrap(),
+            // A command with no flags/args (should be skipped in subcommand_cases)
+            Command::builder("status").build().unwrap(),
+        ]);
+        let script = render_completion(Shell::Zsh, "mytool", &reg);
+        assert!(script.contains("mytool"));
+        assert!(script.contains("deploy"));
+        assert!(script.contains("--env"));
+        assert!(script.contains("--dry-run"));
+    }
+
+    #[test]
+    fn test_render_completion_zsh_empty_summary_uses_canonical() {
+        use crate::query::Registry;
+        // A command with no summary should use the canonical name in the description
+        let reg = Registry::new(vec![Command::builder("run").build().unwrap()]);
+        let script = render_completion(Shell::Zsh, "mytool", &reg);
+        // canonical name used since summary is empty
+        assert!(script.contains("run:run"));
+    }
+
+    #[test]
+    fn test_render_completion_fish_with_flags() {
+        use crate::query::Registry;
+        let reg = Registry::new(vec![Command::builder("deploy")
+            .summary("Deploy the app")
+            .flag(
+                Flag::builder("env")
+                    .takes_value()
+                    .description("target environment")
+                    .build()
+                    .unwrap(),
+            )
+            .flag(Flag::builder("dry-run").description("simulate").build().unwrap())
+            .build()
+            .unwrap()]);
+        let script = render_completion(Shell::Fish, "mytool", &reg);
+        assert!(script.contains("mytool"));
+        assert!(script.contains("deploy"));
+        assert!(script.contains("--env") || script.contains("'env'"));
+        // Flag with takes_value should have -r
+        assert!(script.contains("-r"));
+        // Summary should be in description
+        assert!(script.contains("Deploy the app"));
+    }
+
+    #[test]
+    fn test_render_completion_fish_empty_summary() {
+        use crate::query::Registry;
+        let reg = Registry::new(vec![Command::builder("run").build().unwrap()]);
+        let script = render_completion(Shell::Fish, "mytool", &reg);
+        // Empty summary → no -d '...' in the line for the command
+        assert!(script.contains("run"));
+    }
+
+    #[test]
+    fn test_render_completion_bash_no_flags_cmd() {
+        use crate::query::Registry;
+        // Command without flags should still appear in the top-level list
+        let reg = Registry::new(vec![Command::builder("status").build().unwrap()]);
+        let script = render_completion(Shell::Bash, "app", &reg);
+        assert!(script.contains("status"));
+    }
+
+    #[test]
+    fn test_render_json_schema_variadic_arg() {
+        let cmd = Command::builder("run")
+            .argument(
+                Argument::builder("files")
+                    .variadic()
+                    .description("Files to process")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let schema = render_json_schema(&cmd).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        assert_eq!(v["properties"]["files"]["type"], "array");
+        assert_eq!(v["properties"]["files"]["items"]["type"], "string");
+        assert!(v["properties"]["files"]["description"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_render_json_schema_flag_with_default() {
+        let cmd = Command::builder("run")
+            .flag(
+                Flag::builder("output")
+                    .takes_value()
+                    .default_value("text")
+                    .description("Output format")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let schema = render_json_schema(&cmd).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        assert_eq!(v["properties"]["output"]["default"], "text");
+        assert_eq!(v["properties"]["output"]["type"], "string");
+    }
+
+    #[test]
+    fn test_render_json_schema_required_flag() {
+        let cmd = Command::builder("deploy")
+            .flag(
+                Flag::builder("env")
+                    .takes_value()
+                    .required()
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let schema = render_json_schema(&cmd).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        let req = v["required"].as_array().unwrap();
+        assert!(req.contains(&serde_json::json!("env")));
+    }
+
+    #[test]
+    fn test_render_json_schema_arg_with_default() {
+        let cmd = Command::builder("run")
+            .argument(
+                Argument::builder("target")
+                    .default_value("prod")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let schema = render_json_schema(&cmd).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        assert_eq!(v["properties"]["target"]["default"], "prod");
+    }
+
+    #[test]
+    fn test_render_help_output_in_example() {
+        // Example with output should show "# Output:" line
+        let cmd = Command::builder("run")
+            .example(
+                Example::new("Run example", "myapp run")
+                    .with_output("OK"),
+            )
+            .build()
+            .unwrap();
+        let help = render_help(&cmd);
+        assert!(help.contains("# Output: OK"));
+    }
+
+    #[test]
+    fn test_render_markdown_with_best_practices_and_anti_patterns() {
+        let cmd = Command::builder("deploy")
+            .best_practice("Always dry-run first")
+            .anti_pattern("Deploy on Fridays")
+            .build()
+            .unwrap();
+        let md = render_markdown(&cmd);
+        assert!(md.contains("## Best Practices"));
+        assert!(md.contains("Always dry-run first"));
+        assert!(md.contains("## Anti-Patterns"));
+        assert!(md.contains("Deploy on Fridays"));
+    }
+
+    #[test]
+    fn test_render_markdown_with_subcommands() {
+        let cmd = Command::builder("remote")
+            .subcommand(Command::builder("add").summary("Add remote").build().unwrap())
+            .build()
+            .unwrap();
+        let md = render_markdown(&cmd);
+        assert!(md.contains("## Subcommands"));
+        assert!(md.contains("**add**"));
     }
 }

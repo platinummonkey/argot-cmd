@@ -1035,4 +1035,252 @@ mod tests {
             result
         );
     }
+
+    // ── Async unit tests ──────────────────────────────────────────────────────
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_run_async_empty_args() {
+        let cli = make_cli_no_handler();
+        let result = cli.run_async(std::iter::empty::<&str>()).await;
+        assert!(result.is_ok(), "empty args should return Ok, got {:?}", result);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_run_async_help_flag() {
+        let cli = make_cli_no_handler();
+        let result = cli.run_async(["--help"]).await;
+        assert!(result.is_ok(), "--help should return Ok, got {:?}", result);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_run_async_version_flag() {
+        let cli = make_cli_no_handler();
+        let result = cli.run_async(["--version"]).await;
+        assert!(result.is_ok(), "--version should return Ok, got {:?}", result);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_run_async_with_handler() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let called = Arc::new(AtomicBool::new(false));
+        let called2 = called.clone();
+        let cmd = Command::builder("greet")
+            .summary("Say hello")
+            .handler(Arc::new(move |_parsed| {
+                called2.store(true, Ordering::SeqCst);
+                Ok(())
+            }))
+            .build()
+            .unwrap();
+        let cli = super::Cli::new(vec![cmd])
+            .app_name("testapp")
+            .version("1.2.3");
+        let result = cli.run_async(["greet"]).await;
+        assert!(result.is_ok(), "handler should succeed, got {:?}", result);
+        assert!(called.load(Ordering::SeqCst), "handler should have been called");
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_run_async_unknown_command() {
+        let cli = make_cli_no_handler();
+        let result = cli.run_async(["unknowncmd"]).await;
+        assert!(
+            matches!(result, Err(CliError::Parse(_))),
+            "unknown command should yield Parse error, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_version_without_app_name() {
+        let cmd = Command::builder("greet").build().unwrap();
+        // version set but no app_name — should print just the version
+        let cli = super::Cli::new(vec![cmd]).version("2.0.0");
+        assert!(cli.run(["--version"]).is_ok());
+    }
+
+    #[test]
+    fn test_version_not_set() {
+        let cmd = Command::builder("greet").build().unwrap();
+        // no version at all
+        let cli = super::Cli::new(vec![cmd]);
+        assert!(cli.run(["--version"]).is_ok());
+    }
+
+    #[test]
+    fn test_middleware_after_dispatch_called_on_success() {
+        use crate::middleware::Middleware;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct AfterFlag(Arc<AtomicBool>);
+        impl Middleware for AfterFlag {
+            fn after_dispatch(
+                &self,
+                _: &crate::model::ParsedCommand<'_>,
+                _: &Result<(), Box<dyn std::error::Error + Send + Sync>>,
+            ) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let called = Arc::new(AtomicBool::new(false));
+        let cmd = Command::builder("run")
+            .handler(Arc::new(|_| Ok(())))
+            .build()
+            .unwrap();
+        let cli = super::Cli::new(vec![cmd]).with_middleware(AfterFlag(called.clone()));
+        cli.run(["run"]).unwrap();
+        assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_middleware_after_dispatch_called_on_error() {
+        use crate::middleware::Middleware;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct AfterFlag(Arc<AtomicBool>);
+        impl Middleware for AfterFlag {
+            fn after_dispatch(
+                &self,
+                _: &crate::model::ParsedCommand<'_>,
+                _: &Result<(), Box<dyn std::error::Error + Send + Sync>>,
+            ) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let called = Arc::new(AtomicBool::new(false));
+        let cmd = Command::builder("run")
+            .handler(Arc::new(|_| Err("handler error".into())))
+            .build()
+            .unwrap();
+        let cli = super::Cli::new(vec![cmd]).with_middleware(AfterFlag(called.clone()));
+        let _ = cli.run(["run"]);
+        assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_middleware_on_parse_error_called() {
+        use crate::middleware::Middleware;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct OnErrFlag(Arc<AtomicBool>);
+        impl Middleware for OnErrFlag {
+            fn on_parse_error(&self, _: &crate::parser::ParseError) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let called = Arc::new(AtomicBool::new(false));
+        let cmd = Command::builder("run").build().unwrap();
+        let cli = super::Cli::new(vec![cmd]).with_middleware(OnErrFlag(called.clone()));
+        let _ = cli.run(["unknown_xyz"]);
+        assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_unknown_command_with_suggestions() {
+        // "gree" is close to "greet" — should include suggestions in stderr
+        let cmd = Command::builder("greet").build().unwrap();
+        let cli = super::Cli::new(vec![cmd]);
+        let result = cli.run(["gree"]);
+        // Should fail with parse error (suggestion logic in the error path)
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_help_for_subcommand() {
+        // --help with a known subcommand resolves to that command's help
+        let sub = Command::builder("rollback").summary("Roll back").build().unwrap();
+        let parent = Command::builder("deploy")
+            .summary("Deploy")
+            .subcommand(sub)
+            .build()
+            .unwrap();
+        let cli = super::Cli::new(vec![parent]);
+        let result = cli.run(["deploy", "rollback", "--help"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_help_with_only_flags() {
+        // --help with only flag-like tokens (no command words) renders top-level list
+        let cmd = Command::builder("greet").build().unwrap();
+        let cli = super::Cli::new(vec![cmd]);
+        let result = cli.run(["--flag", "--help"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_help_for_unknown_command() {
+        // --help with an unknown command name falls back to top-level list
+        let cmd = Command::builder("greet").build().unwrap();
+        let cli = super::Cli::new(vec![cmd]);
+        let result = cli.run(["unknowncmd", "--help"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_query_with_no_arg_outputs_json() {
+        // "query" alone (no subcommand) is same as "query commands"
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![Command::builder("deploy").build().unwrap()])
+            .with_query_support();
+        assert!(cli.run(["query"]).is_ok());
+    }
+
+    #[test]
+    fn test_query_examples_via_resolver() {
+        // query examples where exact match fails but resolver finds it by prefix
+        use crate::model::{Command, Example};
+        let cli = super::Cli::new(vec![Command::builder("deploy")
+            .summary("Deploy")
+            .example(Example::new("prod", "deploy prod"))
+            .build()
+            .unwrap()])
+        .with_query_support();
+        // "dep" prefix-resolves to "deploy"
+        let result = cli.run(["query", "examples", "dep"]);
+        assert!(
+            result.is_ok(),
+            "query examples via prefix should succeed, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_query_named_command_via_resolver() {
+        // query <name> where exact match fails but resolver finds by prefix
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![Command::builder("deploy")
+            .summary("Deploy")
+            .build()
+            .unwrap()])
+        .with_query_support();
+        // "dep" prefix-resolves to "deploy"
+        let result = cli.run(["query", "dep"]);
+        assert!(
+            result.is_ok(),
+            "query prefix-resolved name should succeed, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_query_examples_no_name_errors() {
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![Command::builder("deploy").build().unwrap()])
+            .with_query_support();
+        // "query examples" with no command name should error
+        let result = cli.run(["query", "examples"]);
+        assert!(result.is_err(), "query examples with no name should error");
+    }
 }

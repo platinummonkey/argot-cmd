@@ -41,7 +41,4 @@ fuzzy-matcher = { version = "0.3", optional = true }
 argot-derive = { path = "argot-derive", optional = true }
 
 [dev-dependencies]
-# No test-only dependencies.
-# serde_json is a regular dependency (used in library code).
-# To add async tests requiring a runtime, add tokio here:
-# tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros"] }

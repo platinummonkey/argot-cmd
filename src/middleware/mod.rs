@@ -106,3 +106,47 @@ pub trait Middleware: Send + Sync {
     /// ```
     fn on_parse_error(&self, _error: &ParseError) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Command;
+
+    /// A no-op middleware that uses all default implementations.
+    struct NoOpMiddleware;
+    impl Middleware for NoOpMiddleware {}
+
+    #[test]
+    fn test_default_before_dispatch_returns_ok() {
+        let cmd = Command::builder("test").build().unwrap();
+        let cmds = vec![cmd];
+        let parser = crate::parser::Parser::new(&cmds);
+        let parsed = parser.parse(&["test"]).unwrap();
+        let mw = NoOpMiddleware;
+        let result = mw.before_dispatch(&parsed);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_default_after_dispatch_is_noop() {
+        let cmd = Command::builder("test").build().unwrap();
+        let cmds = vec![cmd];
+        let parser = crate::parser::Parser::new(&cmds);
+        let parsed = parser.parse(&["test"]).unwrap();
+        let mw = NoOpMiddleware;
+        // Should not panic
+        let ok_result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Ok(());
+        mw.after_dispatch(&parsed, &ok_result);
+        let err_result: Result<(), Box<dyn std::error::Error + Send + Sync>> =
+            Err("some error".into());
+        mw.after_dispatch(&parsed, &err_result);
+    }
+
+    #[test]
+    fn test_default_on_parse_error_is_noop() {
+        let mw = NoOpMiddleware;
+        let err = ParseError::NoCommand;
+        // Should not panic
+        mw.on_parse_error(&err);
+    }
+}

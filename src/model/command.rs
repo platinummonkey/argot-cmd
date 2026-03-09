@@ -401,6 +401,11 @@ pub struct Command {
     pub best_practices: Vec<String>,
     /// Prose warnings about incorrect usage, surfaced to AI agents.
     pub anti_patterns: Vec<String>,
+    /// Natural-language phrases describing what this command does.
+    ///
+    /// Used for intent-based discovery (e.g. [`crate::query::Registry::match_intent`])
+    /// but intentionally excluded from normal help output.
+    pub semantic_aliases: Vec<String>,
     /// Optional runtime handler invoked by [`crate::cli::Cli::run`].
     ///
     /// Skipped during JSON serialization/deserialization.
@@ -442,6 +447,7 @@ impl std::fmt::Debug for Command {
             .field("subcommands", &self.subcommands)
             .field("best_practices", &self.best_practices)
             .field("anti_patterns", &self.anti_patterns)
+            .field("semantic_aliases", &self.semantic_aliases)
             .field("handler", &self.handler.as_ref().map(|_| "<handler>"));
         #[cfg(feature = "async")]
         ds.field(
@@ -467,6 +473,7 @@ impl PartialEq for Command {
             && self.subcommands == other.subcommands
             && self.best_practices == other.best_practices
             && self.anti_patterns == other.anti_patterns
+            && self.semantic_aliases == other.semantic_aliases
             && self.extra == other.extra
             && self.exclusive_groups == other.exclusive_groups
     }
@@ -487,6 +494,7 @@ impl std::hash::Hash for Command {
         self.subcommands.hash(state);
         self.best_practices.hash(state);
         self.anti_patterns.hash(state);
+        self.semantic_aliases.hash(state);
         // handler is intentionally excluded (not hashable)
         // extra: hash keys in sorted order, with their JSON string representation
         {
@@ -545,6 +553,7 @@ impl Command {
             subcommands: Vec::new(),
             best_practices: Vec::new(),
             anti_patterns: Vec::new(),
+            semantic_aliases: Vec::new(),
             handler: None,
             #[cfg(feature = "async")]
             async_handler: None,
@@ -606,6 +615,7 @@ pub struct CommandBuilder {
     subcommands: Vec<Command>,
     best_practices: Vec<String>,
     anti_patterns: Vec<String>,
+    semantic_aliases: Vec<String>,
     handler: Option<HandlerFn>,
     #[cfg(feature = "async")]
     async_handler: Option<AsyncHandlerFn>,
@@ -726,6 +736,43 @@ impl CommandBuilder {
     /// Append an anti-pattern warning surfaced to AI agents.
     pub fn anti_pattern(mut self, ap: impl Into<String>) -> Self {
         self.anti_patterns.push(ap.into());
+        self
+    }
+
+    /// Replace the entire semantic alias list with the given collection.
+    ///
+    /// Semantic aliases are natural-language phrases used for intent-based
+    /// discovery but are **not shown in help text**.
+    ///
+    /// To add a single semantic alias use [`CommandBuilder::semantic_alias`].
+    pub fn semantic_aliases(
+        mut self,
+        aliases: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.semantic_aliases = aliases.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Append a single natural-language phrase for intent-based discovery.
+    ///
+    /// Unlike [`CommandBuilder::alias`], semantic aliases are natural-language
+    /// phrases describing what the command does (e.g. `"release to production"`,
+    /// `"push to environment"`). They are used by
+    /// [`crate::query::Registry::match_intent`] but are **not shown in help text**.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::Command;
+    /// let cmd = Command::builder("deploy")
+    ///     .semantic_alias("release to production")
+    ///     .semantic_alias("push to environment")
+    ///     .build().unwrap();
+    ///
+    /// assert_eq!(cmd.semantic_aliases, vec!["release to production", "push to environment"]);
+    /// ```
+    pub fn semantic_alias(mut self, s: impl Into<String>) -> Self {
+        self.semantic_aliases.push(s.into());
         self
     }
 
@@ -938,6 +985,7 @@ impl CommandBuilder {
             subcommands: self.subcommands,
             best_practices: self.best_practices,
             anti_patterns: self.anti_patterns,
+            semantic_aliases: self.semantic_aliases,
             handler: self.handler,
             #[cfg(feature = "async")]
             async_handler: self.async_handler,
@@ -1141,5 +1189,246 @@ mod tests {
         let cmd = Command::builder("x").build().unwrap();
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(!json.contains("extra"));
+    }
+
+    #[test]
+    fn test_semantic_alias_builder() {
+        let cmd = Command::builder("deploy")
+            .semantic_alias("release to production")
+            .semantic_alias("push to environment")
+            .build()
+            .unwrap();
+        assert_eq!(
+            cmd.semantic_aliases,
+            vec!["release to production", "push to environment"]
+        );
+    }
+
+    #[test]
+    fn test_semantic_aliases_bulk_builder() {
+        let cmd = Command::builder("deploy")
+            .semantic_aliases(["release to production", "push to environment"])
+            .build()
+            .unwrap();
+        assert_eq!(
+            cmd.semantic_aliases,
+            vec!["release to production", "push to environment"]
+        );
+    }
+
+    #[test]
+    fn test_semantic_alias_not_in_canonical_aliases() {
+        let cmd = Command::builder("deploy")
+            .alias("d")
+            .semantic_alias("release to production")
+            .build()
+            .unwrap();
+        // semantic_aliases and aliases are distinct fields
+        assert_eq!(cmd.aliases, vec!["d"]);
+        assert_eq!(cmd.semantic_aliases, vec!["release to production"]);
+        assert!(!cmd.aliases.contains(&"release to production".to_string()));
+        assert!(!cmd.semantic_aliases.contains(&"d".to_string()));
+    }
+
+    #[test]
+    fn test_debug_impl_includes_fields() {
+        let cmd = Command::builder("debug-test")
+            .alias("dt")
+            .spelling("DEBUGTEST")
+            .summary("Test debug")
+            .description("A debug test command")
+            .handler(Arc::new(|_| Ok(())))
+            .build()
+            .unwrap();
+        let s = format!("{:?}", cmd);
+        assert!(s.contains("debug-test"));
+        assert!(s.contains("dt"));
+        assert!(s.contains("Test debug"));
+        // Handler should appear as "<handler>" not a raw pointer
+        assert!(s.contains("<handler>"));
+        // spellings should also be shown
+        assert!(s.contains("DEBUGTEST"));
+    }
+
+    #[test]
+    fn test_hash_deterministic() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let cmd1 = Command::builder("hash-test")
+            .summary("Hash")
+            .meta("key", serde_json::json!("value"))
+            .build()
+            .unwrap();
+        let cmd2 = Command::builder("hash-test")
+            .summary("Hash")
+            .meta("key", serde_json::json!("value"))
+            .build()
+            .unwrap();
+
+        let mut h1 = DefaultHasher::new();
+        cmd1.hash(&mut h1);
+        let mut h2 = DefaultHasher::new();
+        cmd2.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn test_ord_by_canonical() {
+        let a = Command::builder("alpha").build().unwrap();
+        let b = Command::builder("beta").build().unwrap();
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a.partial_cmp(&a), Some(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn test_ord_same_canonical_by_summary() {
+        let a = Command::builder("cmd").summary("Alpha").build().unwrap();
+        let b = Command::builder("cmd").summary("Beta").build().unwrap();
+        assert!(a < b);
+    }
+
+    #[test]
+    fn test_aliases_builder_method() {
+        let cmd = Command::builder("cmd")
+            .aliases(["a", "b", "c"])
+            .build()
+            .unwrap();
+        assert_eq!(cmd.aliases, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_spellings_builder_method() {
+        let cmd = Command::builder("deploy")
+            .spellings(["DEPLOY", "dploy"])
+            .build()
+            .unwrap();
+        assert_eq!(cmd.spellings, vec!["DEPLOY", "dploy"]);
+    }
+
+    #[test]
+    fn test_best_practice_and_anti_pattern_builder() {
+        let cmd = Command::builder("cmd")
+            .best_practice("Always dry-run first")
+            .anti_pattern("Deploy on Fridays")
+            .build()
+            .unwrap();
+        assert_eq!(cmd.best_practices, vec!["Always dry-run first"]);
+        assert_eq!(cmd.anti_patterns, vec!["Deploy on Fridays"]);
+    }
+
+    #[test]
+    fn test_exclusive_group_too_small() {
+        use crate::model::BuildError;
+        let result = Command::builder("cmd")
+            .flag(Flag::builder("json").build().unwrap())
+            .exclusive(["json"])
+            .build();
+        assert!(matches!(result, Err(BuildError::ExclusiveGroupTooSmall)));
+    }
+
+    #[test]
+    fn test_exclusive_group_unknown_flag() {
+        use crate::model::BuildError;
+        let result = Command::builder("cmd")
+            .flag(Flag::builder("json").build().unwrap())
+            .exclusive(["json", "nonexistent"])
+            .build();
+        assert!(matches!(
+            result,
+            Err(BuildError::ExclusiveGroupUnknownFlag(_))
+        ));
+    }
+
+    #[test]
+    fn test_parsed_command_helpers() {
+        use crate::{Argument, Flag, Parser};
+        let cmd = Command::builder("serve")
+            .argument(Argument::builder("host").required().build().unwrap())
+            .flag(
+                Flag::builder("port")
+                    .takes_value()
+                    .default_value("8080")
+                    .build()
+                    .unwrap(),
+            )
+            .flag(Flag::builder("verbose").build().unwrap())
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parser = Parser::new(&cmds);
+        let parsed = parser
+            .parse(&["serve", "localhost", "--verbose"])
+            .unwrap();
+
+        assert_eq!(parsed.arg("host"), Some("localhost"));
+        assert_eq!(parsed.arg("missing"), None);
+        assert_eq!(parsed.flag("port"), Some("8080"));
+        assert_eq!(parsed.flag("missing"), None);
+        assert!(parsed.flag_bool("verbose"));
+        assert!(!parsed.flag_bool("missing"));
+        assert_eq!(parsed.flag_count("verbose"), 1);
+        assert_eq!(parsed.flag_count("missing"), 0);
+        assert_eq!(parsed.flag_values("port"), vec!["8080"]);
+        assert!(parsed.flag_values("missing").is_empty());
+        assert!(parsed.has_flag("port"));
+        assert!(!parsed.has_flag("missing"));
+
+        let port: u16 = parsed.flag_as("port").unwrap().unwrap();
+        assert_eq!(port, 8080);
+
+        let port_or: u16 = parsed.flag_as_or("port", 9000);
+        assert_eq!(port_or, 8080);
+
+        let missing_or: u16 = parsed.flag_as_or("missing", 9000);
+        assert_eq!(missing_or, 9000);
+
+        let host: String = parsed.arg_as("host").unwrap().unwrap();
+        assert_eq!(host, "localhost");
+
+        let missing_as: Option<Result<u32, _>> = parsed.arg_as("missing");
+        assert!(missing_as.is_none());
+
+        let arg_or: String = parsed.arg_as_or("host", "default".to_string());
+        assert_eq!(arg_or, "localhost");
+
+        let missing_arg_or: String = parsed.arg_as_or("missing", "default".to_string());
+        assert_eq!(missing_arg_or, "default");
+    }
+
+    #[test]
+    fn test_flag_count_false_returns_zero() {
+        use crate::{Flag, Parser};
+        let cmd = Command::builder("cmd")
+            .flag(Flag::builder("verbose").build().unwrap())
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parser = Parser::new(&cmds);
+        let parsed = parser.parse(&["cmd", "--no-verbose"]).unwrap();
+        assert_eq!(parsed.flag_count("verbose"), 0);
+    }
+
+    #[test]
+    fn test_flag_values_json_array() {
+        use crate::{Flag, Parser};
+        let cmd = Command::builder("cmd")
+            .flag(
+                Flag::builder("tag")
+                    .takes_value()
+                    .repeatable()
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let cmds = vec![cmd];
+        let parser = Parser::new(&cmds);
+        let parsed = parser
+            .parse(&["cmd", "--tag=alpha", "--tag=beta"])
+            .unwrap();
+        let values = parsed.flag_values("tag");
+        assert_eq!(values, vec!["alpha", "beta"]);
     }
 }

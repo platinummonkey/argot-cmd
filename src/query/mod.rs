@@ -356,6 +356,74 @@ impl Registry {
         results
     }
 
+    /// Match commands by natural-language intent phrase.
+    ///
+    /// Scores each command by how many words from `phrase` appear in its
+    /// combined text (canonical name, aliases, semantic aliases, summary,
+    /// description). Returns matches sorted by score descending.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot::{Command, Registry};
+    /// let registry = Registry::new(vec![
+    ///     Command::builder("deploy")
+    ///         .summary("Deploy a service to an environment")
+    ///         .semantic_alias("release to production")
+    ///         .semantic_alias("push to environment")
+    ///         .build().unwrap(),
+    ///     Command::builder("status")
+    ///         .summary("Check service status")
+    ///         .build().unwrap(),
+    /// ]);
+    ///
+    /// let results = registry.match_intent("deploy to production");
+    /// assert!(!results.is_empty());
+    /// assert_eq!(results[0].0.canonical, "deploy");
+    /// ```
+    pub fn match_intent(&self, phrase: &str) -> Vec<(&Command, u32)> {
+        let phrase_lower = phrase.to_lowercase();
+        let words: Vec<&str> = phrase_lower
+            .split_whitespace()
+            .filter(|w| !w.is_empty())
+            .collect();
+
+        if words.is_empty() {
+            return vec![];
+        }
+
+        let mut results: Vec<(&Command, u32)> = self
+            .commands
+            .iter()
+            .filter_map(|cmd| {
+                let combined = format!(
+                    "{} {} {} {} {}",
+                    cmd.canonical.to_lowercase(),
+                    cmd.aliases
+                        .iter()
+                        .map(|s| s.to_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    cmd.semantic_aliases
+                        .iter()
+                        .map(|s| s.to_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    cmd.summary.to_lowercase(),
+                    cmd.description.to_lowercase(),
+                );
+                let score = words
+                    .iter()
+                    .filter(|&&w| combined.contains(w))
+                    .count() as u32;
+                if score > 0 { Some((cmd, score)) } else { None }
+            })
+            .collect();
+
+        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results
+    }
+
     /// Serialize the entire command tree to a pretty-printed JSON string.
     ///
     /// Handler closures are excluded from the output (they are skipped by the
@@ -539,6 +607,80 @@ mod tests {
         assert!(json.contains("remote"));
         assert!(json.contains("list"));
         let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_match_intent_single_word() {
+        let r = Registry::new(vec![
+            Command::builder("deploy")
+                .summary("Deploy a service")
+                .build()
+                .unwrap(),
+            Command::builder("status")
+                .summary("Check service status")
+                .build()
+                .unwrap(),
+        ]);
+        let results = r.match_intent("deploy");
+        assert!(!results.is_empty());
+        assert_eq!(results[0].0.canonical, "deploy");
+    }
+
+    #[test]
+    fn test_match_intent_phrase() {
+        let r = Registry::new(vec![
+            Command::builder("deploy")
+                .summary("Deploy a service to an environment")
+                .semantic_alias("release to production")
+                .semantic_alias("push to environment")
+                .build()
+                .unwrap(),
+            Command::builder("status")
+                .summary("Check service status")
+                .build()
+                .unwrap(),
+        ]);
+        let results = r.match_intent("release to production");
+        assert!(!results.is_empty());
+        assert_eq!(results[0].0.canonical, "deploy");
+    }
+
+    #[test]
+    fn test_match_intent_no_match() {
+        let r = Registry::new(vec![
+            Command::builder("deploy")
+                .summary("Deploy a service")
+                .build()
+                .unwrap(),
+        ]);
+        let results = r.match_intent("zzz xyzzy foobar");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_match_intent_sorted_by_score() {
+        let r = Registry::new(vec![
+            Command::builder("status")
+                .summary("Check service status")
+                .build()
+                .unwrap(),
+            Command::builder("deploy")
+                .summary("Deploy a service to an environment")
+                .semantic_alias("release to production")
+                .semantic_alias("push to environment")
+                .build()
+                .unwrap(),
+        ]);
+        // "deploy to production" matches deploy on "deploy", "to", "production"
+        // and matches status only on "to" (if present in summary)
+        let results = r.match_intent("deploy to production");
+        assert!(!results.is_empty());
+        // deploy should score higher than status
+        assert_eq!(results[0].0.canonical, "deploy");
+        // scores are descending
+        for window in results.windows(2) {
+            assert!(window[0].1 >= window[1].1);
+        }
     }
 
     #[test]

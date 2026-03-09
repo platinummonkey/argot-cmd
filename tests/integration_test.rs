@@ -519,3 +519,110 @@ fn test_flag_present_and_absent() {
     assert!(parsed.flag("out").is_some()); // default applied
     assert!(parsed.flag("other").is_none());
 }
+
+// ================================================================
+// Async integration tests (require `async` feature + tokio runtime)
+// ================================================================
+
+#[cfg(feature = "async")]
+mod async_tests {
+    use argot::{Cli, CliError, Command};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    fn make_async_cli_no_handler() -> Cli {
+        let cmd = Command::builder("greet")
+            .summary("Say hello")
+            .build()
+            .unwrap();
+        Cli::new(vec![cmd]).app_name("testapp").version("1.2.3")
+    }
+
+    #[tokio::test]
+    async fn test_async_run_empty_args() {
+        let cli = make_async_cli_no_handler();
+        let result = cli.run_async(std::iter::empty::<&str>()).await;
+        assert!(result.is_ok(), "empty args should return Ok, got {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_async_run_help_flag() {
+        let cli = make_async_cli_no_handler();
+        let result = cli.run_async(["--help"]).await;
+        assert!(result.is_ok(), "--help should return Ok, got {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_async_run_version_flag() {
+        let cli = make_async_cli_no_handler();
+        let result = cli.run_async(["--version"]).await;
+        assert!(result.is_ok(), "--version should return Ok, got {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_async_run_with_async_handler() {
+        let called = Arc::new(AtomicBool::new(false));
+        let called2 = called.clone();
+
+        let cmd = Command::builder("deploy")
+            .summary("Deploy the app")
+            .async_handler(Arc::new(move |_parsed| {
+                let called3 = called2.clone();
+                Box::pin(async move {
+                    called3.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+            }))
+            .build()
+            .unwrap();
+
+        let cli = Cli::new(vec![cmd]).app_name("testapp").version("1.0.0");
+        let result = cli.run_async(["deploy"]).await;
+        assert!(result.is_ok(), "async handler should succeed, got {:?}", result);
+        assert!(called.load(Ordering::SeqCst), "async handler should have been called");
+    }
+
+    #[tokio::test]
+    async fn test_async_run_with_sync_handler_fallback() {
+        let called = Arc::new(AtomicBool::new(false));
+        let called2 = called.clone();
+
+        let cmd = Command::builder("build")
+            .summary("Build the project")
+            .handler(Arc::new(move |_parsed| {
+                called2.store(true, Ordering::SeqCst);
+                Ok(())
+            }))
+            .build()
+            .unwrap();
+
+        let cli = Cli::new(vec![cmd]).app_name("testapp").version("1.0.0");
+        let result = cli.run_async(["build"]).await;
+        assert!(result.is_ok(), "sync handler fallback should succeed, got {:?}", result);
+        assert!(called.load(Ordering::SeqCst), "sync handler should have been called via run_async");
+    }
+
+    #[tokio::test]
+    async fn test_async_run_unknown_command() {
+        let cli = make_async_cli_no_handler();
+        let result = cli.run_async(["unknowncmd"]).await;
+        assert!(
+            matches!(result, Err(CliError::Parse(_))),
+            "unknown command should yield Parse error, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_async_run_no_handler() {
+        let cli = make_async_cli_no_handler();
+        let result = cli.run_async(["greet"]).await;
+        assert!(
+            matches!(result, Err(CliError::NoHandler(ref name)) if name == "greet"),
+            "expected NoHandler(\"greet\"), got {:?}",
+            result
+        );
+    }
+}
