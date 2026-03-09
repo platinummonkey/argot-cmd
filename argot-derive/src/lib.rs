@@ -240,9 +240,12 @@ fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
         }
     };
 
+    // Bind the empty Punctuated to a local so the temporary lives long enough
+    // on Rust 1.75 (E0716: temporary freed while still in use).
+    let empty_fields = syn::punctuated::Punctuated::new();
     let named = match fields {
         Fields::Named(n) => &n.named,
-        Fields::Unit => &syn::punctuated::Punctuated::new(),
+        Fields::Unit => &empty_fields,
         Fields::Unnamed(_) => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
