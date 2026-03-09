@@ -1,73 +1,53 @@
-name: Release-plz
+name: Release
 
 on:
   push:
     tags:
       - "v*"
-    branches:
-      - main
 
 jobs:
-  # Runs on version tag pushes: publishes to crates.io and creates a GitHub
-  # release (with auto-generated source tarballs) for the tagged version.
-  release-plz-release:
-    name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish:
+    name: Publish to crates.io
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: read
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
           ref: main
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish argot-cmd-derive (if not already published)
-        run: cargo publish -p argot-cmd-derive 2>&1 || echo "argot-cmd-derive already published, continuing"
+      - name: Publish argot-cmd-derive
+        run: cargo publish -p argot-cmd-derive
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Run release-plz release
-        uses: release-plz/action@v0.5.128
-        with:
-          command: release
+      - name: Wait for crates.io to index argot-cmd-derive
+        run: sleep 30
+
+      - name: Publish argot-cmd
+        run: cargo publish -p argot-cmd
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  # Runs on every push to main: opens a PR to bump versions for the next
-  # release. Skipped on tag pushes since there is nothing to bump yet.
-  release-plz-pr:
-    name: Release PR
-    if: github.ref == 'refs/heads/main'
+  github-release:
+    name: GitHub Release
+    needs: [publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-    concurrency:
-      group: release-plz-pr-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          ref: main
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run release-plz release-pr
-        uses: release-plz/action@v0.5.128
-        with:
-          command: release-pr
+      - name: Create GitHub Release with source tarballs
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
