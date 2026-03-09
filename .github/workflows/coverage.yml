@@ -13,6 +13,8 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to push coverage.svg back to main
 
     steps:
       - uses: actions/checkout@v4
