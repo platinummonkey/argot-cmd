@@ -14,7 +14,7 @@ jobs:
     name: Code coverage
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # needed to push coverage.svg back to main
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -44,70 +44,21 @@ jobs:
             --exclude-files "argot-derive/*" \
             --exclude-files "examples/*"
 
-      - name: Generate coverage badge SVG
+      - name: Check coverage threshold
         run: |
           python3 - <<'EOF'
           import json, sys
-
           with open("coverage/tarpaulin-report.json") as f:
               data = json.load(f)
-
           pct = float(data.get("coverage", 0))
-          pct_str = f"{pct:.1f}%"
-
-          if pct >= 80:
-              colour = "#4c1"
-          elif pct >= 60:
-              colour = "#a3c51c"
-          elif pct >= 40:
-              colour = "#f89406"
-          else:
-              colour = "#e05d44"
-
-          label = "coverage"
-          label_w = 61
-          value_w = max(len(pct_str) * 7 + 10, 36)
-          total_w = label_w + value_w
-
-          svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="20">
-            <linearGradient id="s" x2="0" y2="100%">
-              <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
-              <stop offset="1" stop-opacity=".1"/>
-            </linearGradient>
-            <clipPath id="r">
-              <rect width="{total_w}" height="20" rx="3" fill="#fff"/>
-            </clipPath>
-            <g clip-path="url(#r)">
-              <rect width="{label_w}" height="20" fill="#555"/>
-              <rect x="{label_w}" width="{value_w}" height="20" fill="{colour}"/>
-              <rect width="{total_w}" height="20" fill="url(#s)"/>
-            </g>
-            <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
-              <text x="{label_w // 2}" y="14" fill="#010101" fill-opacity=".3">{label}</text>
-              <text x="{label_w // 2}" y="13">{label}</text>
-              <text x="{label_w + value_w // 2}" y="14" fill="#010101" fill-opacity=".3">{pct_str}</text>
-              <text x="{label_w + value_w // 2}" y="13">{pct_str}</text>
-            </g>
-          </svg>"""
-
-          with open("coverage.svg", "w") as f:
-              f.write(svg)
-
-          print(f"Coverage: {pct_str}")
+          print(f"Coverage: {pct:.1f}%")
           if pct < 75:
-              print(f"ERROR: coverage {pct_str} is below the 75% threshold", file=sys.stderr)
+              print(f"ERROR: coverage {pct:.1f}% is below the 75% threshold", file=sys.stderr)
               sys.exit(1)
           EOF
 
-      - name: Commit coverage badge
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add coverage.svg
-          if git diff --cached --quiet; then
-            echo "No badge changes to commit"
-          else
-            git commit -m "chore: update coverage badge [skip ci]"
-            git push
-          fi
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/tarpaulin-report.json
+          token: ${{ secrets.CODECOV_TOKEN }}
