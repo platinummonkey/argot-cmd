@@ -38,7 +38,7 @@ jobs:
         run: |
           cargo tarpaulin \
             --all-features \
-            --out Json \
+            --out Json Lcov \
             --output-dir coverage/ \
             --timeout 120 \
             --exclude-files "argot-derive/*" \
@@ -60,5 +60,5 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
-          files: coverage/tarpaulin-report.json
+          files: coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
