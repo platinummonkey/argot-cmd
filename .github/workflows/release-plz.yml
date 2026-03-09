@@ -1,9 +1,14 @@
 name: Release
 
+# Tag routing:
+#   v*-derive     — publish argot-cmd-derive only
+#   v*-cmd        — publish argot-cmd only + create GitHub release
+
 on:
   push:
     tags:
-      - "v*"
+      - "v*-derive"
+      - "v*-cmd"
 
 jobs:
   publish:
@@ -22,14 +27,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Publish argot-cmd-derive
+        if: ${{ endsWith(github.ref_name, '-derive') }}
         run: cargo publish -p argot-cmd-derive
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Wait for crates.io to index argot-cmd-derive
-        run: sleep 30
-
       - name: Publish argot-cmd
+        if: ${{ endsWith(github.ref_name, '-cmd') }}
         run: cargo publish -p argot-cmd
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -37,6 +41,7 @@ jobs:
   github-release:
     name: GitHub Release
     needs: [publish]
+    if: ${{ endsWith(github.ref_name, '-cmd') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
