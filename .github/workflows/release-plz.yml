@@ -22,6 +22,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Publish argot-derive (if not already published)
+        run: cargo publish -p argot-derive 2>&1 || echo "argot-derive already published, continuing"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
       - name: Run release-plz release
         uses: release-plz/action@v0.5.128
         with:

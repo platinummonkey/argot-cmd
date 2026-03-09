@@ -11,11 +11,14 @@ git_release_latest = true
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
 
-# argot-derive is a proc-macro crate; cargo-semver-checks does not support
-# proc-macros, so skip the semver check for it.
+# argot-derive is a proc-macro crate published alongside argot.
+# release-plz cannot diff it against crates.io until it has been published
+# manually the first time (cargo publish -p argot-derive), so disable
+# release-plz management for it entirely. It is published by the release
+# workflow via an explicit cargo publish step before argot is published.
 [[package]]
 name = "argot-derive"
-semver_check = false
+release = false
 
 [changelog]
 header = """
