@@ -24,7 +24,7 @@ Add argot-cmd to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-argot-cmd = "0.1"
+argot-cmd = "0.2"
 ```
 
 Define a command, build a `Cli`, and call `run_env_args_and_exit()`:
@@ -144,6 +144,7 @@ let cmd = Command::builder("deploy")
     .example(Example::new("deploy to staging", "mytool deploy staging"))
     .best_practice("Always deploy to staging before production")
     .anti_pattern("Do not deploy directly to production without validation")
+    .mutating()                                         // marks command as state-modifying
     .subcommand(
         Command::builder("rollback")
             .summary("Roll back the last deployment")
@@ -156,6 +157,24 @@ let cmd = Command::builder("deploy")
     }))
     .build()
     .unwrap();
+```
+
+### Mutating Commands
+
+Mark a command as state-modifying with `.mutating()`. Argot uses this annotation in three ways:
+
+- `render_help` adds an `⚠  MUTATING COMMAND` notice; if no `--dry-run` flag is defined, it also adds `Consider adding --dry-run support.`
+- `render_markdown` prepends `> ⚠ **Mutating command** — this operation modifies state.`
+- `render_json_schema` includes `"mutating": true` in the schema output
+
+```rust
+let cmd = Command::builder("delete")
+    .summary("Delete a resource")
+    .mutating()
+    .build()
+    .unwrap();
+
+assert!(cmd.mutating);
 ```
 
 ### Arbitrary Metadata
@@ -300,6 +319,7 @@ fn main() {
     Cli::new(vec![/* commands */])
         .app_name("mytool")
         .version("1.0.0")
+        .warn_missing_dry_run(true)   // advisory warning for mutating commands without --dry-run
         .run_env_args_and_exit();
 }
 ```
@@ -347,11 +367,20 @@ Agents can then call:
 # List all commands as JSON
 mytool query commands
 
+# List all commands as NDJSON (one compact object per line)
+mytool query commands --stream
+
+# Request only specific fields to reduce output size
+mytool query commands --fields canonical,summary
+
+# Combine --stream and --fields
+mytool query commands --stream --fields canonical,summary,examples
+
 # Get structured metadata for a single command
 mytool query deploy
 
-# List examples for a command
-mytool query examples deploy
+# Get a single command as one compact JSON line
+mytool query deploy --stream
 
 # Prefix matching and aliases work too
 mytool query dep
@@ -403,6 +432,15 @@ for entry in registry.iter_all_recursive() {
 // Serialize the entire tree to pretty-printed JSON (handlers excluded)
 let json = registry.to_json().unwrap();
 
+// Filter to specific top-level fields (reduces output size for agents)
+let slim = registry.to_json_with_fields(&["canonical", "summary"]).unwrap();
+
+// NDJSON: one compact JSON object per command (depth-first), trailing newline
+let ndjson = registry.to_ndjson().unwrap();
+
+// NDJSON with field filtering
+let slim_ndjson = registry.to_ndjson_with_fields(&["canonical", "summary"]).unwrap();
+
 // Intent matching: score commands by how many phrase words appear in their
 // combined text (canonical, aliases, semantic_aliases, summary, description)
 let hits = registry.match_intent("release to production");
@@ -415,6 +453,18 @@ let hits = registry.match_intent("release to production");
 entry.name()       // last segment: "add"
 entry.path_str()   // dotted path: "remote.add"
 entry.path         // Vec<String>: ["remote", "add"]
+```
+
+Free functions are also available for single-command serialization:
+
+```rust
+use argot_cmd::{command_to_json_with_fields, command_to_ndjson};
+
+// Pretty-printed JSON filtered to requested fields
+let json = command_to_json_with_fields(&cmd, &["canonical", "summary"]).unwrap();
+
+// Single compact JSON line (no trailing newline)
+let line = command_to_ndjson(&cmd).unwrap();
 ```
 
 ---
@@ -481,6 +531,54 @@ use argot_cmd::render::render_json_schema;
 let schema = render_json_schema(&cmd).unwrap();
 // Arguments become string properties; boolean flags become boolean properties;
 // flags with choices get an "enum" constraint.
+```
+
+### Skill Files
+
+Skill files are structured Markdown documents designed to be loaded into AI agent contexts (e.g. `.claude/commands/`). They encode safe usage guidance, examples, and caveats in a predictable layout that agents can parse without scraping free-form help text.
+
+```rust
+use argot_cmd::render_skill_file;
+
+let skill = render_skill_file(&cmd);
+// Sections: Safe Usage, Avoid, Arguments, Flags, Examples
+// Empty sections are omitted.
+```
+
+Render skill files for all commands in a registry, depth-first, separated by `---`:
+
+```rust
+use argot_cmd::render_skill_files;
+
+let all_skills = render_skill_files(&registry);
+```
+
+#### YAML Frontmatter
+
+`SkillFrontmatter` is a typed builder for the optional YAML block that agent runtimes (e.g. Claude's skill loader) read to identify and categorise a skill:
+
+```rust
+use serde_json::json;
+use argot_cmd::render::{SkillFrontmatter, render_skill_file_with_frontmatter};
+
+let fm = SkillFrontmatter::new("mytool-deploy")
+    .version("1.0.0")
+    .description("Deploy the application")
+    .requires_bin("mytool")
+    .extra("min_role", json!("ops"));
+
+let skill = render_skill_file_with_frontmatter(&cmd, &fm);
+// Output starts with a ---…--- YAML block followed by the Markdown body.
+```
+
+To generate all skill files with per-command frontmatter, pass a closure that returns `Option<SkillFrontmatter>`. Return `None` to omit frontmatter for a specific command:
+
+```rust
+use argot_cmd::render::{SkillFrontmatter, render_skill_files_with_frontmatter};
+
+let output = render_skill_files_with_frontmatter(&registry, |cmd| {
+    Some(SkillFrontmatter::new(format!("mytool-{}", cmd.canonical)))
+});
 ```
 
 ### Shell Completions
@@ -567,6 +665,37 @@ let cli = Cli::new(vec![/* commands */])
     .with_middleware(AuditLogger);
 ```
 
+### InputValidator
+
+`InputValidator` is a built-in middleware that checks argument and flag values for common injection patterns at dispatch time. Enable checks individually or use `InputValidator::strict()` to enable all of them at once:
+
+```rust
+use argot_cmd::{Cli, InputValidator};
+
+// Enable all checks.
+let cli = Cli::new(vec![/* commands */])
+    .with_middleware(InputValidator::strict());
+
+// Or opt in selectively.
+let selective = InputValidator::new()
+    .check_path_traversal()   // rejects ../  ..\  /…  ~…
+    .check_control_chars()    // rejects ASCII 0x00–0x1F / 0x7F (tab and newline allowed)
+    .check_query_injection()  // rejects ?  and  &key=val patterns
+    .check_url_encoding();    // rejects %XX sequences
+```
+
+You can also call the validator directly without wiring it into a `Cli`:
+
+```rust
+use argot_cmd::InputValidator;
+
+let v = InputValidator::strict();
+assert!(v.validate_value("file", "safe_name.txt").is_ok());
+assert!(v.validate_value("file", "../etc/passwd").is_err());
+```
+
+`InputValidator` validates values supplied at invocation time. It does not sanitize command metadata strings; see the [Security: Prompt Injection Defense](#security-prompt-injection-defense) section for guidance on metadata sanitization.
+
 ---
 
 ## Async Support
@@ -575,7 +704,7 @@ Enable the `async` feature to register async handlers and use `run_async`:
 
 ```toml
 [dependencies]
-argot-cmd = { version = "0.1", features = ["async"] }
+argot-cmd = { version = "0.2", features = ["async"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -621,7 +750,7 @@ Enable the `mcp` feature to expose commands as MCP tools over a stdio JSON-RPC 2
 
 ```toml
 [dependencies]
-argot-cmd = { version = "0.1", features = ["mcp"] }
+argot-cmd = { version = "0.2", features = ["mcp"] }
 ```
 
 ```rust
@@ -672,7 +801,7 @@ Enable the `derive` feature to auto-generate `Command` definitions from struct a
 
 ```toml
 [dependencies]
-argot-cmd = { version = "0.1", features = ["derive"] }
+argot-cmd = { version = "0.2", features = ["derive"] }
 ```
 
 ```rust
@@ -741,7 +870,7 @@ Enable the `fuzzy` feature to search commands with the skim fuzzy-matching algor
 
 ```toml
 [dependencies]
-argot-cmd = { version = "0.1", features = ["fuzzy"] }
+argot-cmd = { version = "0.2", features = ["fuzzy"] }
 ```
 
 ```rust
