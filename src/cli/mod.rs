@@ -215,7 +215,19 @@ impl Cli {
             .summary("Query command metadata (agent discovery)")
             .description(
                 "Structured JSON output for agent discovery. \
-                 `query commands` lists all commands; `query <name>` returns metadata for one.",
+                 `query commands` lists all commands; `query <name>` returns metadata for one. \
+                 Use `--fields <csv>` to request only specific top-level fields, reducing output \
+                 size for agents that only need a subset of command metadata.",
+            )
+            .flag(
+                crate::model::Flag::builder("fields")
+                    .description(
+                        "Comma-separated list of top-level fields to include in JSON output \
+                         (e.g. `canonical,summary,examples`). When omitted all fields are returned.",
+                    )
+                    .takes_value()
+                    .build()
+                    .expect("built-in fields flag should always build"),
             )
             .example(crate::model::Example::new(
                 "query commands",
@@ -224,6 +236,14 @@ impl Cli {
             .example(crate::model::Example::new(
                 "query deploy",
                 "Get metadata for the deploy command",
+            ))
+            .example(crate::model::Example::new(
+                "query deploy --fields canonical,summary,examples",
+                "Get only canonical name, summary, and examples for the deploy command",
+            ))
+            .example(crate::model::Example::new(
+                "query commands --fields canonical,summary",
+                "List all commands showing only canonical name and summary",
             ))
             .build()
             .expect("built-in query command should always build");
@@ -643,17 +663,49 @@ impl Cli {
 
     fn handle_query(&self, args: &[&str]) -> Result<(), CliError> {
         // Strip --json flag (JSON is always the output format; --json accepted for compatibility).
-        let args: Vec<&str> = args.iter().copied().filter(|a| *a != "--json").collect();
-        let args = args.as_slice();
+        // Also extract the optional --fields=<csv> / --fields <csv> value.
+        let mut fields_opt: Option<String> = None;
+        let mut remaining: Vec<&str> = Vec::with_capacity(args.len());
+        let mut iter = args.iter().copied().peekable();
+        while let Some(arg) = iter.next() {
+            if arg == "--json" {
+                // silently consumed
+            } else if let Some(csv) = arg.strip_prefix("--fields=") {
+                // --fields=canonical,summary
+                fields_opt = Some(csv.to_owned());
+            } else if arg == "--fields" {
+                // --fields canonical,summary  (next token is the value)
+                if let Some(val) = iter.next() {
+                    fields_opt = Some(val.to_owned());
+                }
+                // if no value follows, we just ignore the flag
+            } else {
+                remaining.push(arg);
+            }
+        }
+        let args = remaining.as_slice();
+
+        // Parse comma-separated field names, trimming whitespace.
+        let fields_owned: Vec<String> = fields_opt
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(|f| f.trim().to_owned())
+            .filter(|f| !f.is_empty())
+            .collect();
+        let fields: Vec<&str> = fields_owned.iter().map(String::as_str).collect();
 
         match args.first().copied() {
             // `query commands` → JSON array of all top-level commands
             None | Some("commands") => {
-                let json = self.registry.to_json().map_err(|e| {
-                    CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
-                        e.to_string(),
-                    ))
-                })?;
+                let json = self
+                    .registry
+                    .to_json_with_fields(&fields)
+                    .map_err(|e| {
+                        CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                            e.to_string(),
+                        ))
+                    })?;
                 println!("{}", json);
                 Ok(())
             }
@@ -689,11 +741,12 @@ impl Cli {
                 // First try exact match, then resolver (which handles prefix/alias).
                 let cmd = self.registry.get_command(name);
                 if let Some(cmd) = cmd {
-                    let json = serde_json::to_string_pretty(cmd).map_err(|e| {
-                        CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
-                            e.to_string(),
-                        ))
-                    })?;
+                    let json =
+                        crate::query::command_to_json_with_fields(cmd, &fields).map_err(|e| {
+                            CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                                e.to_string(),
+                            ))
+                        })?;
                     println!("{}", json);
                     return Ok(());
                 }
@@ -702,11 +755,14 @@ impl Cli {
                 let resolver = crate::resolver::Resolver::new(self.registry.commands());
                 match resolver.resolve(name) {
                     Ok(cmd) => {
-                        let json = serde_json::to_string_pretty(cmd).map_err(|e| {
-                            CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
-                                e.to_string(),
-                            ))
-                        })?;
+                        let json = crate::query::command_to_json_with_fields(cmd, &fields)
+                            .map_err(|e| {
+                                CliError::Handler(
+                                    Box::<dyn std::error::Error + Send + Sync>::from(
+                                        e.to_string(),
+                                    ),
+                                )
+                            })?;
                         println!("{}", json);
                         Ok(())
                     }

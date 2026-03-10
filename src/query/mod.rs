@@ -450,6 +450,59 @@ impl Registry {
         serde_json::to_string_pretty(&self.commands).map_err(QueryError::Serialization)
     }
 
+    /// Serialize the entire command tree to a pretty-printed JSON string,
+    /// filtering each command object to only include the requested top-level
+    /// fields.
+    ///
+    /// Each command object (including nested subcommands at any depth) is
+    /// filtered so that only keys listed in `fields` are retained. The
+    /// `subcommands` key is always walked recursively even if it is not in
+    /// `fields`; its entries are filtered before being emitted.
+    ///
+    /// If `fields` is empty the method falls back to the same output as
+    /// [`Registry::to_json`].
+    ///
+    /// Field names that do not exist in the serialized command are silently
+    /// ignored (no error is returned for missing fields).
+    ///
+    /// Valid field names correspond to the top-level keys of the serialized
+    /// [`Command`] object: `canonical`, `aliases`, `spellings`,
+    /// `semantic_aliases`, `summary`, `description`, `arguments`, `flags`,
+    /// `examples`, `best_practices`, `anti_patterns`, `subcommands`, `meta`,
+    /// `mutating`, etc.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Serialization`] if `serde_json` fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot_cmd::{Command, Registry};
+    /// let registry = Registry::new(vec![
+    ///     Command::builder("deploy")
+    ///         .summary("Deploy the app")
+    ///         .build()
+    ///         .unwrap(),
+    /// ]);
+    ///
+    /// let json = registry.to_json_with_fields(&["canonical", "summary"]).unwrap();
+    /// let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    /// let obj = &v[0];
+    /// assert_eq!(obj["canonical"], "deploy");
+    /// assert_eq!(obj["summary"], "Deploy the app");
+    /// // fields not requested are absent
+    /// assert!(obj.get("examples").is_none());
+    /// ```
+    pub fn to_json_with_fields(&self, fields: &[&str]) -> Result<String, QueryError> {
+        if fields.is_empty() {
+            return self.to_json();
+        }
+        let value = serde_json::to_value(&self.commands).map_err(QueryError::Serialization)?;
+        let filtered = filter_commands_value(value, fields);
+        serde_json::to_string_pretty(&filtered).map_err(QueryError::Serialization)
+    }
+
     /// Iterate over every command in the tree depth-first, including all
     /// nested subcommands at any depth.
     ///
@@ -484,6 +537,84 @@ impl Registry {
             collect_recursive(cmd, vec![], &mut out);
         }
         out
+    }
+}
+
+/// Serialize a single [`Command`] to a pretty-printed JSON string, filtering
+/// the output to only include the requested top-level fields.
+///
+/// Behaves like [`Registry::to_json_with_fields`] but for a single command
+/// rather than the whole registry.
+///
+/// If `fields` is empty the method serializes the full command (equivalent to
+/// `serde_json::to_string_pretty(cmd)`).
+///
+/// # Errors
+///
+/// Returns [`QueryError::Serialization`] if `serde_json` fails.
+///
+/// # Examples
+///
+/// ```
+/// # use argot_cmd::{Command, Registry};
+/// # use argot_cmd::query::command_to_json_with_fields;
+/// let cmd = Command::builder("deploy")
+///     .summary("Deploy the app")
+///     .build()
+///     .unwrap();
+///
+/// let json = command_to_json_with_fields(&cmd, &["canonical", "summary"]).unwrap();
+/// let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+/// assert_eq!(v["canonical"], "deploy");
+/// assert_eq!(v["summary"], "Deploy the app");
+/// assert!(v.get("examples").is_none());
+/// ```
+pub fn command_to_json_with_fields(cmd: &Command, fields: &[&str]) -> Result<String, QueryError> {
+    if fields.is_empty() {
+        return serde_json::to_string_pretty(cmd).map_err(QueryError::Serialization);
+    }
+    let value = serde_json::to_value(cmd).map_err(QueryError::Serialization)?;
+    let filtered = filter_command_object(value, fields);
+    serde_json::to_string_pretty(&filtered).map_err(QueryError::Serialization)
+}
+
+/// Filter a JSON array of command objects to only include the requested fields
+/// in each entry.
+fn filter_commands_value(value: serde_json::Value, fields: &[&str]) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(
+                arr.into_iter()
+                    .map(|v| filter_command_object(v, fields))
+                    .collect(),
+            )
+        }
+        other => other,
+    }
+}
+
+/// Filter a single command JSON object to only include the requested fields.
+///
+/// The `subcommands` value (if present and requested) has its entries
+/// recursively filtered as well.
+fn filter_command_object(value: serde_json::Value, fields: &[&str]) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for field in fields {
+                if let Some(v) = map.get(*field) {
+                    // If this field is `subcommands`, recursively filter its entries.
+                    let filtered_v = if *field == "subcommands" {
+                        filter_commands_value(v.clone(), fields)
+                    } else {
+                        v.clone()
+                    };
+                    out.insert((*field).to_owned(), filtered_v);
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other,
     }
 }
 
@@ -608,6 +739,126 @@ mod tests {
         assert!(json.contains("remote"));
         assert!(json.contains("list"));
         let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_to_json_with_fields_filters_keys() {
+        let r = Registry::new(vec![
+            Command::builder("deploy")
+                .summary("Deploy the app")
+                .description("Deploys to production")
+                .build()
+                .unwrap(),
+        ]);
+        let json = r.to_json_with_fields(&["canonical", "summary"]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = &v[0];
+        assert_eq!(obj["canonical"], "deploy");
+        assert_eq!(obj["summary"], "Deploy the app");
+        // fields not in the filter must be absent
+        assert!(obj.get("description").is_none());
+        assert!(obj.get("examples").is_none());
+        assert!(obj.get("aliases").is_none());
+    }
+
+    #[test]
+    fn test_to_json_with_fields_empty_falls_back_to_full() {
+        let r = Registry::new(vec![
+            Command::builder("deploy")
+                .summary("Deploy the app")
+                .build()
+                .unwrap(),
+        ]);
+        let full = r.to_json().unwrap();
+        let filtered = r.to_json_with_fields(&[]).unwrap();
+        assert_eq!(full, filtered);
+    }
+
+    #[test]
+    fn test_to_json_with_fields_missing_field_silently_omitted() {
+        let r = Registry::new(vec![
+            Command::builder("deploy").build().unwrap(),
+        ]);
+        // "nonexistent_key" does not exist — should produce an object with only "canonical"
+        let json = r
+            .to_json_with_fields(&["canonical", "nonexistent_key"])
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = &v[0];
+        assert_eq!(obj["canonical"], "deploy");
+        assert!(obj.get("nonexistent_key").is_none());
+    }
+
+    #[test]
+    fn test_to_json_with_fields_subcommands_filtered_recursively() {
+        let r = Registry::new(vec![
+            Command::builder("remote")
+                .summary("Manage remotes")
+                .subcommand(
+                    Command::builder("add")
+                        .summary("Add a remote")
+                        .description("Detailed add docs")
+                        .build()
+                        .unwrap(),
+                )
+                .build()
+                .unwrap(),
+        ]);
+        let json = r
+            .to_json_with_fields(&["canonical", "summary", "subcommands"])
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = &v[0];
+        assert_eq!(obj["canonical"], "remote");
+        assert!(obj.get("description").is_none());
+        // subcommands array should be present
+        let subs = obj["subcommands"].as_array().unwrap();
+        assert_eq!(subs.len(), 1);
+        // the subcommand entry should also be filtered
+        assert_eq!(subs[0]["canonical"], "add");
+        assert_eq!(subs[0]["summary"], "Add a remote");
+        assert!(subs[0].get("description").is_none());
+    }
+
+    #[test]
+    fn test_to_json_with_fields_subcommands_not_requested_absent() {
+        let r = Registry::new(vec![
+            Command::builder("remote")
+                .subcommand(Command::builder("add").build().unwrap())
+                .build()
+                .unwrap(),
+        ]);
+        // "subcommands" not in requested fields → key should be absent
+        let json = r.to_json_with_fields(&["canonical"]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = &v[0];
+        assert_eq!(obj["canonical"], "remote");
+        assert!(obj.get("subcommands").is_none());
+    }
+
+    #[test]
+    fn test_command_to_json_with_fields() {
+        let cmd = Command::builder("deploy")
+            .summary("Deploy the app")
+            .description("Long description")
+            .build()
+            .unwrap();
+        let json = command_to_json_with_fields(&cmd, &["canonical", "summary"]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["canonical"], "deploy");
+        assert_eq!(v["summary"], "Deploy the app");
+        assert!(v.get("description").is_none());
+    }
+
+    #[test]
+    fn test_command_to_json_with_fields_empty_falls_back_to_full() {
+        let cmd = Command::builder("deploy")
+            .summary("Deploy the app")
+            .build()
+            .unwrap();
+        let full = serde_json::to_string_pretty(&cmd).unwrap();
+        let filtered = command_to_json_with_fields(&cmd, &[]).unwrap();
+        assert_eq!(full, filtered);
     }
 
     #[test]
