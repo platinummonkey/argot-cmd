@@ -105,7 +105,7 @@ pub use model::{
 #[cfg(feature = "async")]
 pub use model::AsyncHandlerFn;
 pub use parser::{ParseError, Parser};
-pub use query::{command_to_json_with_fields, CommandEntry, QueryError, Registry};
+pub use query::{command_to_json_with_fields, command_to_ndjson, CommandEntry, QueryError, Registry};
 pub use render::{
     render_ambiguity, render_completion, render_docs, render_help, render_json_schema,
     render_markdown, render_resolve_error, render_skill_file, render_skill_files,

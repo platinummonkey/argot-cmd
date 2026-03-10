@@ -192,8 +192,12 @@ impl Cli {
     /// When enabled, the CLI recognises a built-in `query` command:
     ///
     /// ```text
-    /// tool query commands            # list all commands as JSON
-    /// tool query <name>              # get structured JSON for a named command
+    /// tool query commands                          # list all commands as JSON
+    /// tool query commands --stream                 # NDJSON: one object per line
+    /// tool query commands --fields canonical,summary
+    /// tool query commands --stream --fields canonical,summary
+    /// tool query <name>                            # get structured JSON for one command
+    /// tool query <name> --stream                   # single compact JSON line
     /// ```
     ///
     /// The `query` command is also injected into the registry so that it
@@ -207,6 +211,7 @@ impl Cli {
     /// let cli = Cli::new(vec![Command::builder("deploy").build().unwrap()])
     ///     .with_query_support();
     /// // Now: `tool query commands` and `tool query deploy` work.
+    /// // Also: `tool query commands --stream` and `tool query deploy --stream`.
     /// ```
     pub fn with_query_support(mut self) -> Self {
         self.query_support = true;
@@ -663,50 +668,62 @@ impl Cli {
 
     fn handle_query(&self, args: &[&str]) -> Result<(), CliError> {
         // Strip --json flag (JSON is always the output format; --json accepted for compatibility).
-        // Also extract the optional --fields=<csv> / --fields <csv> value.
+        // Extract --stream and --fields flags; --json is a no-op for compat.
+        let mut stream = false;
         let mut fields_opt: Option<String> = None;
-        let mut remaining: Vec<&str> = Vec::with_capacity(args.len());
+        let mut positional: Vec<&str> = Vec::new();
+
         let mut iter = args.iter().copied().peekable();
         while let Some(arg) = iter.next() {
             if arg == "--json" {
-                // silently consumed
-            } else if let Some(csv) = arg.strip_prefix("--fields=") {
-                // --fields=canonical,summary
-                fields_opt = Some(csv.to_owned());
+                // accepted for compatibility, no-op
+            } else if arg == "--stream" {
+                stream = true;
             } else if arg == "--fields" {
-                // --fields canonical,summary  (next token is the value)
                 if let Some(val) = iter.next() {
                     fields_opt = Some(val.to_owned());
                 }
-                // if no value follows, we just ignore the flag
+            } else if let Some(val) = arg.strip_prefix("--fields=") {
+                fields_opt = Some(val.to_owned());
             } else {
-                remaining.push(arg);
+                positional.push(arg);
             }
         }
-        let args = remaining.as_slice();
+        let args = positional.as_slice();
 
-        // Parse comma-separated field names, trimming whitespace.
-        let fields_owned: Vec<String> = fields_opt
+        let field_strings: Vec<String> = fields_opt
             .as_deref()
             .unwrap_or("")
             .split(',')
             .map(|f| f.trim().to_owned())
             .filter(|f| !f.is_empty())
             .collect();
-        let fields: Vec<&str> = fields_owned.iter().map(String::as_str).collect();
+        let fields: Vec<&str> = field_strings.iter().map(String::as_str).collect();
 
         match args.first().copied() {
-            // `query commands` → JSON array of all top-level commands
+            // `query commands` → JSON array of all top-level commands (or NDJSON if --stream)
             None | Some("commands") => {
-                let json = self
-                    .registry
-                    .to_json_with_fields(&fields)
-                    .map_err(|e| {
-                        CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
-                            e.to_string(),
-                        ))
-                    })?;
-                println!("{}", json);
+                if stream {
+                    let ndjson = self
+                        .registry
+                        .to_ndjson_with_fields(&fields)
+                        .map_err(|e| {
+                            CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                                e.to_string(),
+                            ))
+                        })?;
+                    print!("{}", ndjson);
+                } else {
+                    let json = self
+                        .registry
+                        .to_json_with_fields(&fields)
+                        .map_err(|e| {
+                            CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                                e.to_string(),
+                            ))
+                        })?;
+                    println!("{}", json);
+                }
                 Ok(())
             }
             // `query examples <name>` → JSON array of examples for the named command
@@ -736,18 +753,27 @@ impl Cli {
                 println!("{}", json);
                 Ok(())
             }
-            // `query <name>` → JSON for the named command
+            // `query <name>` → JSON (or NDJSON if --stream) for the named command
             Some(name) => {
                 // First try exact match, then resolver (which handles prefix/alias).
                 let cmd = self.registry.get_command(name);
                 if let Some(cmd) = cmd {
-                    let json =
-                        crate::query::command_to_json_with_fields(cmd, &fields).map_err(|e| {
+                    if stream {
+                        let line = crate::query::command_to_ndjson(cmd).map_err(|e| {
                             CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
                                 e.to_string(),
                             ))
                         })?;
-                    println!("{}", json);
+                        println!("{}", line);
+                    } else {
+                        let json =
+                            crate::query::command_to_json_with_fields(cmd, &fields).map_err(|e| {
+                                CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                                    e.to_string(),
+                                ))
+                            })?;
+                        println!("{}", json);
+                    }
                     return Ok(());
                 }
 
@@ -755,15 +781,24 @@ impl Cli {
                 let resolver = crate::resolver::Resolver::new(self.registry.commands());
                 match resolver.resolve(name) {
                     Ok(cmd) => {
-                        let json = crate::query::command_to_json_with_fields(cmd, &fields)
-                            .map_err(|e| {
-                                CliError::Handler(
-                                    Box::<dyn std::error::Error + Send + Sync>::from(
-                                        e.to_string(),
-                                    ),
-                                )
+                        if stream {
+                            let line = crate::query::command_to_ndjson(cmd).map_err(|e| {
+                                CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                                    e.to_string(),
+                                ))
                             })?;
-                        println!("{}", json);
+                            println!("{}", line);
+                        } else {
+                            let json = crate::query::command_to_json_with_fields(cmd, &fields)
+                                .map_err(|e| {
+                                    CliError::Handler(
+                                        Box::<dyn std::error::Error + Send + Sync>::from(
+                                            e.to_string(),
+                                        ),
+                                    )
+                                })?;
+                            println!("{}", json);
+                        }
                         Ok(())
                     }
                     Err(crate::resolver::ResolveError::Ambiguous { input, candidates }) => {
@@ -1487,5 +1522,83 @@ mod tests {
         // "query examples" with no command name should error
         let result = cli.run(["query", "examples"]);
         assert!(result.is_err(), "query examples with no name should error");
+    }
+
+    #[test]
+    fn test_query_commands_stream_succeeds() {
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![
+            Command::builder("deploy").summary("Deploy").build().unwrap(),
+            Command::builder("status").summary("Status").build().unwrap(),
+        ])
+        .with_query_support();
+        let result = cli.run(["query", "commands", "--stream"]);
+        assert!(
+            result.is_ok(),
+            "query commands --stream should return Ok, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_query_commands_stream_with_fields_succeeds() {
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![
+            Command::builder("deploy").summary("Deploy").build().unwrap(),
+        ])
+        .with_query_support();
+        let result = cli.run(["query", "commands", "--stream", "--fields", "canonical,summary"]);
+        assert!(
+            result.is_ok(),
+            "query commands --stream --fields should return Ok, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_query_named_command_stream_succeeds() {
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![Command::builder("deploy")
+            .summary("Deploy svc")
+            .build()
+            .unwrap()])
+        .with_query_support();
+        let result = cli.run(["query", "deploy", "--stream"]);
+        assert!(
+            result.is_ok(),
+            "query <name> --stream should return Ok, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_query_named_command_via_resolver_stream_succeeds() {
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![Command::builder("deploy")
+            .summary("Deploy svc")
+            .build()
+            .unwrap()])
+        .with_query_support();
+        // "dep" prefix-resolves to "deploy"
+        let result = cli.run(["query", "dep", "--stream"]);
+        assert!(
+            result.is_ok(),
+            "query prefix-resolved --stream should return Ok, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_query_stream_bare_query_succeeds() {
+        // "query --stream" alone (no subcommand) is same as "query commands --stream"
+        use crate::model::Command;
+        let cli =
+            super::Cli::new(vec![Command::builder("deploy").build().unwrap()]).with_query_support();
+        let result = cli.run(["query", "--stream"]);
+        assert!(
+            result.is_ok(),
+            "query --stream (no subcommand) should return Ok, got {:?}",
+            result
+        );
     }
 }

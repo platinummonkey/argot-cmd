@@ -503,6 +503,90 @@ impl Registry {
         serde_json::to_string_pretty(&filtered).map_err(QueryError::Serialization)
     }
 
+    /// Serialize the command tree as NDJSON (one compact JSON object per line).
+    ///
+    /// Commands are emitted depth-first using [`Registry::iter_all_recursive`].
+    /// Each line is a single, self-contained JSON object representing one
+    /// command (handler closures excluded). Subcommands appear as their own
+    /// lines rather than being nested inside their parent, which lets agents
+    /// process the registry incrementally without buffering the entire tree.
+    ///
+    /// An empty registry returns an empty string (no trailing newline).
+    /// A non-empty registry ends with a trailing newline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Serialization`] if serialization fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot_cmd::{Command, Registry};
+    /// let registry = Registry::new(vec![
+    ///     Command::builder("remote")
+    ///         .subcommand(Command::builder("add").build().unwrap())
+    ///         .build()
+    ///         .unwrap(),
+    /// ]);
+    ///
+    /// let ndjson = registry.to_ndjson().unwrap();
+    /// let lines: Vec<&str> = ndjson.trim_end_matches('\n').split('\n').collect();
+    /// assert_eq!(lines.len(), 2); // "remote" + "remote add"
+    /// // Every line must be valid JSON.
+    /// for line in &lines {
+    ///     assert!(serde_json::from_str::<serde_json::Value>(line).is_ok());
+    /// }
+    /// ```
+    pub fn to_ndjson(&self) -> Result<String, QueryError> {
+        self.to_ndjson_with_fields(&[])
+    }
+
+    /// Serialize the command tree as NDJSON, filtering each object to the
+    /// given field names.
+    ///
+    /// Behaves identically to [`Registry::to_ndjson`] except that each JSON
+    /// object is filtered to include only the keys listed in `fields`. When
+    /// `fields` is empty, all fields are included (equivalent to
+    /// [`Registry::to_ndjson`]).
+    ///
+    /// # Arguments
+    ///
+    /// - `fields` — Field names to keep in each output object. Pass `&[]` to
+    ///   include all fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Serialization`] if serialization fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use argot_cmd::{Command, Registry};
+    /// let registry = Registry::new(vec![
+    ///     Command::builder("deploy").summary("Deploy the app").build().unwrap(),
+    /// ]);
+    ///
+    /// let ndjson = registry.to_ndjson_with_fields(&["canonical", "summary"]).unwrap();
+    /// let val: serde_json::Value = serde_json::from_str(ndjson.trim_end_matches('\n')).unwrap();
+    /// assert!(val.get("canonical").is_some());
+    /// assert!(val.get("summary").is_some());
+    /// assert!(val.get("description").is_none());
+    /// ```
+    pub fn to_ndjson_with_fields(&self, fields: &[&str]) -> Result<String, QueryError> {
+        let entries = self.iter_all_recursive();
+        if entries.is_empty() {
+            return Ok(String::new());
+        }
+        let mut lines = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let line = command_to_ndjson_with_fields(entry.command, fields)?;
+            lines.push(line);
+        }
+        let mut output = lines.join("\n");
+        output.push('\n');
+        Ok(output)
+    }
+
     /// Iterate over every command in the tree depth-first, including all
     /// nested subcommands at any depth.
     ///
@@ -629,6 +713,51 @@ fn collect_recursive<'a>(cmd: &'a Command, mut path: Vec<String>, out: &mut Vec<
     }
 }
 
+/// Serialize a single [`Command`] to a compact (single-line) JSON string.
+///
+/// The output contains no trailing newline. Handler closures are excluded.
+/// This is the single-command companion to [`Registry::to_ndjson`].
+///
+/// # Errors
+///
+/// Returns [`QueryError::Serialization`] if serialization fails.
+///
+/// # Examples
+///
+/// ```
+/// # use argot_cmd::{Command, command_to_ndjson};
+/// let cmd = Command::builder("deploy").summary("Deploy").build().unwrap();
+/// let line = command_to_ndjson(&cmd).unwrap();
+/// // No trailing newline.
+/// assert!(!line.ends_with('\n'));
+/// // Must be valid compact JSON on one line.
+/// assert!(!line.contains('\n'));
+/// let val: serde_json::Value = serde_json::from_str(&line).unwrap();
+/// assert_eq!(val["canonical"], "deploy");
+/// ```
+pub fn command_to_ndjson(cmd: &Command) -> Result<String, QueryError> {
+    command_to_ndjson_with_fields(cmd, &[])
+}
+
+/// Internal helper: serialize a command to compact JSON, optionally filtering
+/// to the given set of field names. When `fields` is empty all fields are kept.
+fn command_to_ndjson_with_fields(cmd: &Command, fields: &[&str]) -> Result<String, QueryError> {
+    let mut value = serde_json::to_value(cmd).map_err(QueryError::Serialization)?;
+    if !fields.is_empty() {
+        if let serde_json::Value::Object(ref mut map) = value {
+            let keys_to_remove: Vec<String> = map
+                .keys()
+                .filter(|k| !fields.contains(&k.as_str()))
+                .cloned()
+                .collect();
+            for key in keys_to_remove {
+                map.remove(&key);
+            }
+        }
+    }
+    serde_json::to_string(&value).map_err(QueryError::Serialization)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,6 +868,109 @@ mod tests {
         assert!(json.contains("remote"));
         assert!(json.contains("list"));
         let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+    }
+
+    // ── NDJSON tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_to_ndjson_empty_registry_returns_empty_string() {
+        let r = Registry::new(vec![]);
+        let ndjson = r.to_ndjson().unwrap();
+        assert_eq!(ndjson, "");
+    }
+
+    #[test]
+    fn test_to_ndjson_one_line_per_command_including_subcommands() {
+        // registry() has: remote (with push subcommand) + list = 3 total entries
+        let r = registry();
+        let ndjson = r.to_ndjson().unwrap();
+        assert!(ndjson.ends_with('\n'), "should end with trailing newline");
+        let lines: Vec<&str> = ndjson
+            .trim_end_matches('\n')
+            .split('\n')
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(lines.len(), 3, "remote + push + list = 3 lines, got: {:?}", lines);
+    }
+
+    #[test]
+    fn test_to_ndjson_each_line_is_valid_json() {
+        let r = registry();
+        let ndjson = r.to_ndjson().unwrap();
+        for line in ndjson.trim_end_matches('\n').split('\n') {
+            let result: Result<serde_json::Value, _> = serde_json::from_str(line);
+            assert!(result.is_ok(), "line is not valid JSON: {:?}", line);
+        }
+    }
+
+    #[test]
+    fn test_to_ndjson_depth_first_order() {
+        let r = registry();
+        let ndjson = r.to_ndjson().unwrap();
+        let lines: Vec<&str> = ndjson.trim_end_matches('\n').split('\n').collect();
+        // depth-first: remote, push (subcommand of remote), list
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        let third: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(first["canonical"], "remote");
+        assert_eq!(second["canonical"], "push");
+        assert_eq!(third["canonical"], "list");
+    }
+
+    #[test]
+    fn test_to_ndjson_with_fields_filters_correctly() {
+        let r = registry();
+        let ndjson = r.to_ndjson_with_fields(&["canonical", "summary"]).unwrap();
+        for line in ndjson.trim_end_matches('\n').split('\n') {
+            let val: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert!(val.get("canonical").is_some(), "missing 'canonical' in line: {}", line);
+            assert!(val.get("summary").is_some(), "missing 'summary' in line: {}", line);
+            assert!(
+                val.get("description").is_none(),
+                "'description' should be filtered out: {}",
+                line
+            );
+            assert!(
+                val.get("examples").is_none(),
+                "'examples' should be filtered out: {}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn test_to_ndjson_with_empty_fields_includes_all() {
+        let r = registry();
+        let ndjson_all = r.to_ndjson().unwrap();
+        let ndjson_empty_fields = r.to_ndjson_with_fields(&[]).unwrap();
+        assert_eq!(ndjson_all, ndjson_empty_fields);
+    }
+
+    #[test]
+    fn test_command_to_ndjson_single_compact_line() {
+        let cmd = Command::builder("deploy").summary("Deploy").build().unwrap();
+        let line = super::command_to_ndjson(&cmd).unwrap();
+        assert!(
+            !line.ends_with('\n'),
+            "command_to_ndjson should have no trailing newline"
+        );
+        assert!(
+            !line.contains('\n'),
+            "command_to_ndjson should be a single line"
+        );
+        let val: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(val["canonical"], "deploy");
+        assert_eq!(val["summary"], "Deploy");
+    }
+
+    #[test]
+    fn test_command_to_ndjson_compact_not_pretty() {
+        let cmd = Command::builder("run").build().unwrap();
+        let line = super::command_to_ndjson(&cmd).unwrap();
+        // Compact JSON has no newlines and is not pretty-printed.
+        assert!(!line.contains('\n'));
+        // Compact JSON should not have extra whitespace after colons (serde_json compact).
+        assert!(!line.contains(": "), "should be compact, not pretty-printed");
     }
 
     #[test]
