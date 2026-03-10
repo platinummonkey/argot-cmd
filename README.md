@@ -847,6 +847,50 @@ Returned by `Registry::to_json()`.
 
 ---
 
+## Security: Prompt Injection Defense
+
+Command metadata fields — `summary`, `description`, `examples`, `best_practices`, `anti_patterns` — flow directly into JSON query output (`registry.to_json()`), skill files, and MCP tool definitions consumed by AI agents. This is standard behavior for any system that builds prompts from structured data, and it carries the same prompt injection risk.
+
+### The Risk
+
+If those strings come from user-controlled or external sources, an attacker who can influence the data can embed instructions like `"Ignore previous instructions and..."` into a command description. That string is then passed verbatim to any LLM that consumes the tool's output.
+
+### When You Are at Risk
+
+- Loading command definitions from a config file, database, or API response
+- Using `Command::builder("...").description(user_provided_string)` where `user_provided_string` comes from external input
+- Calling `registry.to_json()` or rendering skill files when metadata was sourced from external input
+- Passing command help text or JSON query output directly into an LLM context without review
+
+### Mitigation Strategies
+
+**Keep metadata static.** The safest pattern is defining all command metadata as Rust string literals compiled into the binary. Static metadata cannot be tampered with at runtime.
+
+**Treat metadata as untrusted at system boundaries.** Validate and sanitize strings before passing them to `Command::builder`. Do not pass raw external strings directly into metadata fields.
+
+**Strip control characters and suspicious sequences.** A minimal sanitization pass before building a command:
+
+```rust
+fn sanitize_metadata(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect()
+}
+```
+
+This removes null bytes, escape sequences, and other non-printable characters while preserving newlines for multi-line descriptions.
+
+**Use `InputValidator` middleware to reject adversarial flag values at dispatch time.** Note that `InputValidator` validates flag and argument values supplied at invocation, not the command metadata strings themselves. It is a complementary defense, not a replacement for sanitizing metadata at build time.
+
+**Audit metadata sources.** If external data must flow into command metadata, log it and review it. Treat it the same as any other user-controlled input that reaches a security boundary.
+
+### What Argot Does Not Do
+
+Argot does not automatically sanitize metadata strings. It stores and serializes whatever strings are provided. Sanitizing externally-sourced strings before building commands is the application author's responsibility.
+
+---
+
 ## MSRV
 
 Minimum Supported Rust Version: **1.94.0**
