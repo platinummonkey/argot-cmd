@@ -85,6 +85,7 @@
 #![warn(missing_docs)]
 
 pub mod cli;
+pub mod input_validation;
 pub mod middleware;
 pub mod model;
 pub mod parser;
@@ -93,6 +94,7 @@ pub mod render;
 pub mod resolver;
 
 pub use cli::{Cli, CliError};
+pub use input_validation::{InputValidator, ValidationError};
 pub use middleware::Middleware;
 
 pub use model::{
