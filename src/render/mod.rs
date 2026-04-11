@@ -210,12 +210,10 @@ fn render_frontmatter(fm: &SkillFrontmatter, cmd: &Command) -> String {
         .description
         .as_deref()
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            if cmd.summary.is_empty() {
-                None
-            } else {
-                Some(cmd.summary.as_str())
-            }
+        .or(if cmd.summary.is_empty() {
+            None
+        } else {
+            Some(cmd.summary.as_str())
         });
     if let Some(d) = desc {
         out.push_str(&format!("description: {}\n", d));
