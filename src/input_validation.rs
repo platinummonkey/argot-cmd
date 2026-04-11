@@ -188,40 +188,32 @@ impl InputValidator {
     /// assert!(v.validate_value("path", "../secret").is_err());
     /// ```
     pub fn validate_value(&self, field: &str, value: &str) -> Result<(), ValidationError> {
-        if self.path_traversal {
-            if contains_path_traversal(value) {
-                return Err(ValidationError::PathTraversal {
-                    field: field.to_owned(),
-                    value: value.to_owned(),
-                });
-            }
+        if self.path_traversal && contains_path_traversal(value) {
+            return Err(ValidationError::PathTraversal {
+                field: field.to_owned(),
+                value: value.to_owned(),
+            });
         }
 
-        if self.control_chars {
-            if contains_control_char(value) {
-                return Err(ValidationError::ControlCharacter {
-                    field: field.to_owned(),
-                    value: value.to_owned(),
-                });
-            }
+        if self.control_chars && contains_control_char(value) {
+            return Err(ValidationError::ControlCharacter {
+                field: field.to_owned(),
+                value: value.to_owned(),
+            });
         }
 
-        if self.query_injection {
-            if contains_query_injection(value) {
-                return Err(ValidationError::QueryInjection {
-                    field: field.to_owned(),
-                    value: value.to_owned(),
-                });
-            }
+        if self.query_injection && contains_query_injection(value) {
+            return Err(ValidationError::QueryInjection {
+                field: field.to_owned(),
+                value: value.to_owned(),
+            });
         }
 
-        if self.url_encoding {
-            if contains_url_encoding(value) {
-                return Err(ValidationError::UrlEncoding {
-                    field: field.to_owned(),
-                    value: value.to_owned(),
-                });
-            }
+        if self.url_encoding && contains_url_encoding(value) {
+            return Err(ValidationError::UrlEncoding {
+                field: field.to_owned(),
+                value: value.to_owned(),
+            });
         }
 
         Ok(())
@@ -326,10 +318,12 @@ fn contains_url_encoding(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
-                return true;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            return true;
         }
         i += 1;
     }
