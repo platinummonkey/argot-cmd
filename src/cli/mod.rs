@@ -120,6 +120,70 @@ impl Cli {
         }
     }
 
+    /// Borrow the slice of registered top-level commands.
+    ///
+    /// Useful when an application wants to enumerate or render the commands
+    /// after construction (for diagnostics, dynamic help screens, etc.). For
+    /// richer queries use the [`Registry`] directly.
+    pub fn commands(&self) -> &[crate::model::Command] {
+        self.registry.commands()
+    }
+
+    /// Build a `Cli` from a [`crate::source::LayeredBuilder`], merging every
+    /// source's contributions into the internal registry.
+    ///
+    /// Returns the constructed `Cli` alongside the load diagnostics produced
+    /// during merge (`Shadowed`, `OverrideTargetMissing`, `SchemaWarning`,
+    /// `SourceError`).
+    ///
+    /// **In production, partition diagnostics by
+    /// [`crate::source::LoadDiagnostic::is_error`] and abort startup if any
+    /// errors are present** — `SourceError` indicates a configured source
+    /// contributed no commands at all (e.g. a missing non-optional directory),
+    /// which silently changes which commands the CLI resolves. Non-error
+    /// diagnostics (shadows, schema warnings, missing override targets) are
+    /// safe to print and continue.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use argot_cmd::{Cli, Command};
+    /// use argot_cmd::source::{EmbeddedSource, LayeredBuilder, Layer};
+    ///
+    /// let embedded = vec![Command::builder("ping").summary("Ping").build().unwrap()];
+    /// let user = vec![
+    ///     Command::builder("ping").summary("Ping (user override)").build().unwrap(),
+    /// ];
+    ///
+    /// let (cli, diagnostics) = Cli::from_layered(
+    ///     LayeredBuilder::new()
+    ///         .add(EmbeddedSource::new("builtin", embedded))
+    ///         .add(EmbeddedSource::new("user", user).with_layer(Layer::User)),
+    /// );
+    ///
+    /// assert_eq!(diagnostics.len(), 1); // the embedded "ping" was shadowed
+    /// // The Cli is otherwise identical to one built via Cli::new(...).
+    /// assert!(cli.run(std::iter::empty::<&str>()).is_ok());
+    /// ```
+    #[must_use = "load diagnostics may include SourceError entries indicating sources that failed to load — inspect them or pattern-match to filter"]
+    pub fn from_layered(
+        builder: crate::source::LayeredBuilder,
+    ) -> (Self, Vec<crate::source::LoadDiagnostic>) {
+        let (registry, diagnostics) = builder.build();
+        (
+            Self {
+                registry,
+                app_name: String::new(),
+                version: None,
+                middlewares: vec![],
+                renderer: Box::new(DefaultRenderer),
+                query_support: false,
+                warn_missing_dry_run: false,
+            },
+            diagnostics,
+        )
+    }
+
     /// Set the application name (shown in version output and top-level help).
     ///
     /// If not set, the version string is printed without a prefix.
@@ -704,24 +768,18 @@ impl Cli {
             // `query commands` → JSON array of all top-level commands (or NDJSON if --stream)
             None | Some("commands") => {
                 if stream {
-                    let ndjson = self
-                        .registry
-                        .to_ndjson_with_fields(&fields)
-                        .map_err(|e| {
-                            CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
-                                e.to_string(),
-                            ))
-                        })?;
+                    let ndjson = self.registry.to_ndjson_with_fields(&fields).map_err(|e| {
+                        CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                            e.to_string(),
+                        ))
+                    })?;
                     print!("{}", ndjson);
                 } else {
-                    let json = self
-                        .registry
-                        .to_json_with_fields(&fields)
-                        .map_err(|e| {
-                            CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
-                                e.to_string(),
-                            ))
-                        })?;
+                    let json = self.registry.to_json_with_fields(&fields).map_err(|e| {
+                        CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
+                            e.to_string(),
+                        ))
+                    })?;
                     println!("{}", json);
                 }
                 Ok(())
@@ -766,8 +824,8 @@ impl Cli {
                         })?;
                         println!("{}", line);
                     } else {
-                        let json =
-                            crate::query::command_to_json_with_fields(cmd, &fields).map_err(|e| {
+                        let json = crate::query::command_to_json_with_fields(cmd, &fields)
+                            .map_err(|e| {
                                 CliError::Handler(Box::<dyn std::error::Error + Send + Sync>::from(
                                     e.to_string(),
                                 ))
@@ -1219,7 +1277,10 @@ mod tests {
         // Dispatch should succeed even though there's no --dry-run flag.
         let result = cli.run(["delete"]);
         assert!(result.is_ok(), "dispatch should succeed, got {:?}", result);
-        assert!(called.load(Ordering::SeqCst), "handler should have been called");
+        assert!(
+            called.load(Ordering::SeqCst),
+            "handler should have been called"
+        );
     }
 
     #[test]
@@ -1231,7 +1292,12 @@ mod tests {
         let cmd = Command::builder("delete")
             .summary("Delete a resource")
             .mutating()
-            .flag(Flag::builder("dry-run").description("Simulate").build().unwrap())
+            .flag(
+                Flag::builder("dry-run")
+                    .description("Simulate")
+                    .build()
+                    .unwrap(),
+            )
             .handler(Arc::new(|_| Ok(())))
             .build()
             .unwrap();
@@ -1528,8 +1594,14 @@ mod tests {
     fn test_query_commands_stream_succeeds() {
         use crate::model::Command;
         let cli = super::Cli::new(vec![
-            Command::builder("deploy").summary("Deploy").build().unwrap(),
-            Command::builder("status").summary("Status").build().unwrap(),
+            Command::builder("deploy")
+                .summary("Deploy")
+                .build()
+                .unwrap(),
+            Command::builder("status")
+                .summary("Status")
+                .build()
+                .unwrap(),
         ])
         .with_query_support();
         let result = cli.run(["query", "commands", "--stream"]);
@@ -1543,11 +1615,18 @@ mod tests {
     #[test]
     fn test_query_commands_stream_with_fields_succeeds() {
         use crate::model::Command;
-        let cli = super::Cli::new(vec![
-            Command::builder("deploy").summary("Deploy").build().unwrap(),
-        ])
+        let cli = super::Cli::new(vec![Command::builder("deploy")
+            .summary("Deploy")
+            .build()
+            .unwrap()])
         .with_query_support();
-        let result = cli.run(["query", "commands", "--stream", "--fields", "canonical,summary"]);
+        let result = cli.run([
+            "query",
+            "commands",
+            "--stream",
+            "--fields",
+            "canonical,summary",
+        ]);
         assert!(
             result.is_ok(),
             "query commands --stream --fields should return Ok, got {:?}",
@@ -1599,6 +1678,99 @@ mod tests {
             result.is_ok(),
             "query --stream (no subcommand) should return Ok, got {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn test_from_layered_returns_cli_and_diagnostics() {
+        use crate::model::Command;
+        use crate::source::{EmbeddedSource, Layer, LayeredBuilder, LoadDiagnostic};
+
+        let embedded = vec![Command::builder("deploy")
+            .summary("embedded")
+            .build()
+            .unwrap()];
+        let user = vec![Command::builder("deploy")
+            .summary("user override")
+            .build()
+            .unwrap()];
+
+        let builder = LayeredBuilder::new()
+            .add(EmbeddedSource::new("builtin", embedded))
+            .add(EmbeddedSource::new("user", user).with_layer(Layer::User));
+
+        let (cli, diags) = super::Cli::from_layered(builder);
+
+        // The user-layer "deploy" wins.
+        let cmd = cli.registry.get_command("deploy").unwrap();
+        assert_eq!(cmd.summary, "user override");
+        // Exactly one Shadowed diagnostic.
+        assert_eq!(diags.len(), 1);
+        assert!(matches!(&diags[0], LoadDiagnostic::Shadowed { .. }));
+    }
+
+    #[test]
+    fn test_from_layered_empty_builder_yields_runnable_cli() {
+        use crate::source::LayeredBuilder;
+        let (cli, diags) = super::Cli::from_layered(LayeredBuilder::new());
+        assert!(diags.is_empty());
+        // An empty Cli still handles --help / empty input gracefully.
+        assert!(cli.run(std::iter::empty::<&str>()).is_ok());
+    }
+
+    #[test]
+    fn test_commands_returns_registered_top_level_commands() {
+        use crate::model::Command;
+        let cli = super::Cli::new(vec![
+            Command::builder("a").build().unwrap(),
+            Command::builder("b").build().unwrap(),
+        ]);
+        let names: Vec<&str> = cli
+            .commands()
+            .iter()
+            .map(|c| c.canonical.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_from_layered_propagates_source_error_diagnostics() {
+        // A custom CommandSource that emits a SourceError must surface it
+        // through Cli::from_layered. Pins the contract that diagnostics are
+        // not filtered or downgraded between the source's load() and the
+        // Cli's diagnostic vector.
+        use crate::source::{CommandSource, LayeredBuilder, LoadDiagnostic, SourceLoad};
+
+        struct FailingSource;
+        impl CommandSource for FailingSource {
+            fn name(&self) -> &str {
+                "failing"
+            }
+            fn load(&self) -> SourceLoad {
+                SourceLoad {
+                    commands: vec![],
+                    diagnostics: vec![LoadDiagnostic::SourceError {
+                        source: "failing".into(),
+                        path: Some("/synthetic/path".into()),
+                        message: "synthetic load failure".into(),
+                    }],
+                }
+            }
+        }
+
+        let (_cli, diags) = super::Cli::from_layered(LayeredBuilder::new().add(FailingSource));
+        let any_error = diags.iter().any(
+            |d| matches!(d, LoadDiagnostic::SourceError { source, .. } if source == "failing"),
+        );
+        assert!(
+            any_error,
+            "Cli::from_layered must surface SourceError diagnostics from its sources, got {:?}",
+            diags
+        );
+        // is_error() must classify SourceError as fatal.
+        assert!(
+            diags.iter().any(|d| d.is_error()),
+            "is_error() must match SourceError variants"
         );
     }
 }

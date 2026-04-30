@@ -6,7 +6,44 @@ Argot adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-<!-- Nothing pending -->
+### Added
+
+- `source` module — layered command sources with priority-ordered merging.
+  - `CommandSource` trait (object-safe) for plugging in custom command producers.
+  - `Layer` enum (`Embedded`, `User`, `Project`, `Local`, `Custom(i32)`) with
+    `rank()` for precedence comparisons. Higher rank wins.
+  - `LoadedCommand` carrying `priority` and optional `overrides` hints, plus
+    a `SourceOrigin` for provenance.
+  - `LayeredBuilder` — assembles a `Registry` from multiple sources with
+    deterministic merging by (layer rank, priority, insertion order).
+  - `LoadDiagnostic` (Shadowed / OverrideTargetMissing / SourceError /
+    SchemaWarning) with `Display` impls that surface source, layer, and path.
+  - `EmbeddedSource` — wraps a `Vec<Command>` as a `CommandSource`.
+- `markdown-source` feature flag — enables `MarkdownDirSource`, which loads
+  commands from `*.md` files with YAML-style frontmatter (`name`, `summary`,
+  `aliases`, `priority`, `overrides`, `layer`, `mutating`, `extra`, etc.).
+- `examples/layered_commands.rs` demonstrating the layered-source pattern.
+- `Cli::from_layered(LayeredBuilder) -> (Cli, Vec<LoadDiagnostic>)` —
+  one-call construction of a `Cli` from layered command sources, returning
+  diagnostics so the caller can surface them.
+- `Cli::commands() -> &[Command]` — borrow the registered top-level commands.
+- `MarkdownDirSource` now parses `## Arguments`, `## Flags`, and `## Examples`
+  sections in the markdown body into typed `Argument`, `Flag`, and `Example`
+  values. Bullet grammar supports modifiers (`required`, `variadic`,
+  `default:`, `env:`, `choices:`, `repeatable`) and per-bullet parse failures
+  emit `SchemaWarning` diagnostics rather than aborting the file.
+- `docs/migrating-from-clap.md` — translation table + worked examples for
+  applications coming from clap.
+- Discovery helpers in `source::markdown`:
+  - `MarkdownDirSource::user_config(app_name)` — `Layer::User` source rooted at
+    the platform's user-config directory (`$XDG_CONFIG_HOME` / `~/.config` /
+    `%APPDATA%`), marked optional.
+  - `MarkdownDirSource::project_root(app_name)` — `Layer::Project` source found
+    by walking up from the current directory looking for
+    `.<app_name>/commands/`, marked optional.
+  - `user_config_dir(app_name)` and `find_project_dir(app_name, start)` free
+    functions for callers that need to inspect the resolved path before
+    constructing a source.
 
 ---
 

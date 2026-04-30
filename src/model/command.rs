@@ -1500,9 +1500,15 @@ mod tests {
             .build()
             .unwrap();
         let json = serde_json::to_string(&cmd).unwrap();
-        assert!(json.contains("\"mutating\":true"), "JSON should include mutating:true");
+        assert!(
+            json.contains("\"mutating\":true"),
+            "JSON should include mutating:true"
+        );
         let de: Command = serde_json::from_str(&json).unwrap();
-        assert!(de.mutating, "deserialized command should have mutating=true");
+        assert!(
+            de.mutating,
+            "deserialized command should have mutating=true"
+        );
     }
 
     #[test]
@@ -1511,6 +1517,9 @@ mod tests {
         let json = serde_json::to_string(&cmd).unwrap();
         // With #[serde(default)], false is still serialized (no skip_serializing_if)
         let de: Command = serde_json::from_str(&json).unwrap();
-        assert!(!de.mutating, "deserialized non-mutating command should have mutating=false");
+        assert!(
+            !de.mutating,
+            "deserialized non-mutating command should have mutating=false"
+        );
     }
 }

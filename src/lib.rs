@@ -10,7 +10,7 @@
 //!
 //! ## Architecture
 //!
-//! The library is built around five cooperating layers:
+//! The library is built around six cooperating layers:
 //!
 //! 1. **[`model`]** — the data model: [`Command`], [`Argument`], [`Flag`],
 //!    [`Example`], and their builders.
@@ -23,9 +23,13 @@
 //!    search.
 //! 5. **[`render`]** — three plain-text / Markdown renderers: [`render_help`],
 //!    [`render_subcommand_list`], and [`render_markdown`].
+//! 6. **[`source`]** — layered command sources that let an application
+//!    assemble a [`Registry`] from in-memory commands plus on-disk Markdown
+//!    files (with priority/precedence hints) instead of a single hard-coded
+//!    `Vec<Command>`. Useful for per-project or per-user command overrides.
 //!
-//! A convenience [`cli`] module provides the [`Cli`] struct, which wires all
-//! five layers together so you can go from `Vec<Command>` to a fully
+//! A convenience [`cli`] module provides the [`Cli`] struct, which wires the
+//! core layers together so you can go from `Vec<Command>` to a fully
 //! functional CLI dispatch loop in a few lines.
 //!
 //! ## Quick Start
@@ -66,11 +70,12 @@
 //!
 //! ## Feature Flags
 //!
-//! | Feature   | Description |
-//! |-----------|-------------|
-//! | `derive`  | Enables the `#[derive(ArgotCommand)]` proc-macro from `argot-cmd-derive`. |
-//! | `fuzzy`   | Enables [`Registry::fuzzy_search`] via the `fuzzy-matcher` crate.    |
-//! | `mcp`     | Enables the MCP stdio transport server ([`transport`]).               |
+//! | Feature            | Description |
+//! |--------------------|-------------|
+//! | `derive`           | Enables the `#[derive(ArgotCommand)]` proc-macro from `argot-cmd-derive`. |
+//! | `fuzzy`            | Enables [`Registry::fuzzy_search`] via the `fuzzy-matcher` crate. |
+//! | `mcp`              | Enables the MCP stdio transport server ([`transport`]). |
+//! | `markdown-source`  | Enables `source::markdown::MarkdownDirSource`, which loads commands from `*.md` files with YAML-style frontmatter. |
 //!
 //! ## Modules
 //!
@@ -80,6 +85,7 @@
 //! - [`parser`] — `argv` parsing
 //! - [`query`] — command registry and search
 //! - [`render`] — human-readable and Markdown output
+//! - [`source`] — layered command sources with precedence rules
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -92,6 +98,7 @@ pub mod parser;
 pub mod query;
 pub mod render;
 pub mod resolver;
+pub mod source;
 
 pub use cli::{Cli, CliError};
 pub use input_validation::{InputValidator, ValidationError};
@@ -105,14 +112,22 @@ pub use model::{
 #[cfg(feature = "async")]
 pub use model::AsyncHandlerFn;
 pub use parser::{ParseError, Parser};
-pub use query::{command_to_json_with_fields, command_to_ndjson, CommandEntry, QueryError, Registry};
+pub use query::{
+    command_to_json_with_fields, command_to_ndjson, CommandEntry, QueryError, Registry,
+};
 pub use render::{
     render_ambiguity, render_completion, render_docs, render_help, render_json_schema,
     render_markdown, render_resolve_error, render_skill_file, render_skill_file_with_frontmatter,
     render_skill_files, render_skill_files_with_frontmatter, render_subcommand_list,
-    DefaultRenderer, Renderer, SkillFrontmatter, Shell,
+    DefaultRenderer, Renderer, Shell, SkillFrontmatter,
 };
 pub use resolver::{ResolveError, Resolver};
+#[cfg(feature = "markdown-source")]
+pub use source::markdown::MarkdownDirSource;
+pub use source::{
+    CommandSource, EmbeddedSource, Layer, LayeredBuilder, LoadDiagnostic, LoadedCommand,
+    SourceLoad, SourceOrigin,
+};
 
 /// Trait implemented by types annotated with `#[derive(ArgotCommand)]`.
 ///

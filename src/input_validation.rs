@@ -31,9 +31,7 @@ use crate::model::ParsedCommand;
 #[derive(Debug, Error, PartialEq)]
 pub enum ValidationError {
     /// A field value contains a path traversal sequence (`../`, `..\`, `/…`, or `~…`).
-    #[error(
-        "field `{field}` contains a path traversal sequence in value: {value:?}"
-    )]
+    #[error("field `{field}` contains a path traversal sequence in value: {value:?}")]
     PathTraversal {
         /// Name of the argument or flag that triggered the error.
         field: String,
@@ -43,9 +41,7 @@ pub enum ValidationError {
 
     /// A field value contains an ASCII control character (0x00–0x1F or 0x7F),
     /// excluding horizontal tab (0x09) and newline (0x0A).
-    #[error(
-        "field `{field}` contains a control character in value: {value:?}"
-    )]
+    #[error("field `{field}` contains a control character in value: {value:?}")]
     ControlCharacter {
         /// Name of the argument or flag that triggered the error.
         field: String,
@@ -55,9 +51,7 @@ pub enum ValidationError {
 
     /// A field value appears to contain an embedded URL query string
     /// (`?` or `&key=val` patterns).
-    #[error(
-        "field `{field}` contains an embedded query parameter in value: {value:?}"
-    )]
+    #[error("field `{field}` contains an embedded query parameter in value: {value:?}")]
     QueryInjection {
         /// Name of the argument or flag that triggered the error.
         field: String,
@@ -66,9 +60,7 @@ pub enum ValidationError {
     },
 
     /// A field value contains a percent-encoded (`%XX`) sequence.
-    #[error(
-        "field `{field}` contains a URL-encoded sequence in value: {value:?}"
-    )]
+    #[error("field `{field}` contains a URL-encoded sequence in value: {value:?}")]
     UrlEncoding {
         /// Name of the argument or flag that triggered the error.
         field: String,

@@ -56,6 +56,32 @@ The following items are stable from v0.1.0 onwards:
 | `Cli::run_async` | Method | Feature: `async`. Stable. |
 | `Cli::run_async_and_exit` | Method | Feature: `async`. Stable. |
 
+### Source layer (added in 0.2.x)
+
+The `source` module is **stable from v0.2 onwards**. Its public surface:
+
+| Item | Type | Notes |
+|------|------|-------|
+| `CommandSource` | Trait | Object-safe (`Box<dyn CommandSource>` works). Method signatures stable. |
+| `EmbeddedSource` | Struct | Constructor + `with_layer` / `with_priority` are stable. |
+| `Layer` | Enum | `Embedded`, `User`, `Project`, `Local`, `Custom(i32)` variants stable. `rank()` and `label()` are stable. No `Ord` impl (rank is non-injective on `Custom`). |
+| `LayeredBuilder` | Struct | `new`, `add`, `add_boxed`, `build` are stable. `build()` is `#[must_use]`. |
+| `LoadedCommand` | Struct | Fields `command`, `priority`, `overrides`, `origin` are stable. Builder methods stable. |
+| `LoadDiagnostic` | Enum | Variants `Shadowed`, `OverrideTargetMissing`, `SourceError`, `SchemaWarning` are stable, including their named fields. `is_error()` and `Display` are stable. |
+| `SourceLoad`, `SourceOrigin` | Structs | Field shapes stable. |
+| `Cli::from_layered` | Method | Returns `(Cli, Vec<LoadDiagnostic>)`, marked `#[must_use]`. Stable. |
+| `Cli::commands` | Method | Returns `&[Command]`. Stable. |
+
+### `markdown-source` feature (added in 0.2.x)
+
+| Item | Type | Notes |
+|------|------|-------|
+| `source::markdown::MarkdownDirSource` | Struct | Constructors `new`, `optional`, `user_config`, `project_root` are stable. |
+| `source::markdown::user_config_dir` | Function | Returns `Option<PathBuf>`. Resolution order (XDG → HOME → APPDATA) is stable. |
+| `source::markdown::find_project_dir` | Function | Returns `Option<PathBuf>`. Walk-up semantics stable; non-directory candidates silently skipped (documented). |
+| Frontmatter schema | YAML subset | Recognised keys: `name` (required), `summary`, `aliases`, `spellings`, `semantic_aliases`, `best_practices`, `anti_patterns`, `priority`, `overrides`, `layer`, `mutating`, `extra`. Adding new optional keys is non-breaking. Removing or repurposing existing keys is breaking. |
+| Markdown body sections | `## Arguments`, `## Flags`, `## Examples` | Bullet grammar (see `src/source/markdown.rs` module docs) is stable from 0.2. Heading matching is case-insensitive. Adding new recognised modifiers (`required`, `default:`, etc.) is non-breaking; renaming or removing them is breaking. |
+
 ### Trait Object Safety
 
 Both `Middleware` and `Renderer` are object-safe (`Box<dyn Middleware>`, `Box<dyn Renderer>` work). This is a stability guarantee — we will not make breaking changes that remove object safety.

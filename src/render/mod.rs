@@ -3,7 +3,7 @@
 //! This module exposes three rendering functions and one disambiguation helper:
 //!
 //! - **[`render_help`]** — produces a multi-section plain-text help page
-//!   (NAME, SUMMARY, DESCRIPTION, USAGE, ARGUMENTS, FLAGS, SUBCOMMANDS,
+//!   (NAME, SUMMARY, DESCRIPTION, USAGE, ARGUMENTS, SUBCOMMANDS, FLAGS,
 //!   EXAMPLES, BEST PRACTICES, ANTI-PATTERNS). Sections that have no content
 //!   are omitted.
 //!
@@ -473,7 +473,7 @@ impl Renderer for DefaultRenderer {
 /// Render a human-readable help page for a command.
 ///
 /// The output contains the following sections (each omitted when empty):
-/// NAME, SUMMARY, DESCRIPTION, USAGE, ARGUMENTS, FLAGS, SUBCOMMANDS,
+/// NAME, SUMMARY, DESCRIPTION, USAGE, ARGUMENTS, SUBCOMMANDS, FLAGS,
 /// EXAMPLES, BEST PRACTICES, ANTI-PATTERNS.
 ///
 /// # Arguments
@@ -513,9 +513,7 @@ pub fn render_help(command: &Command) -> String {
         out.push_str("⚠  MUTATING COMMAND\n");
         let has_dry_run = command.flags.iter().any(|f| f.name == "dry-run");
         if !has_dry_run {
-            out.push_str(
-                "  This command modifies state. Consider adding --dry-run support.\n",
-            );
+            out.push_str("  This command modifies state. Consider adding --dry-run support.\n");
         }
         out.push('\n');
     }
@@ -535,6 +533,14 @@ pub fn render_help(command: &Command) -> String {
         out.push('\n');
     }
 
+    if !command.subcommands.is_empty() {
+        out.push_str("SUBCOMMANDS\n");
+        for sub in &command.subcommands {
+            out.push_str(&format!("    {}  {}\n", sub.canonical, sub.summary));
+        }
+        out.push('\n');
+    }
+
     if !command.flags.is_empty() {
         out.push_str("FLAGS\n");
         for flag in &command.flags {
@@ -544,14 +550,6 @@ pub fn render_help(command: &Command) -> String {
                 "    {}--{}  {}{}\n",
                 short_part, flag.name, flag.description, req
             ));
-        }
-        out.push('\n');
-    }
-
-    if !command.subcommands.is_empty() {
-        out.push_str("SUBCOMMANDS\n");
-        for sub in &command.subcommands {
-            out.push_str(&format!("    {}  {}\n", sub.canonical, sub.summary));
         }
         out.push('\n');
     }
@@ -654,9 +652,7 @@ pub fn render_markdown(command: &Command) -> String {
     }
 
     if command.mutating {
-        out.push_str(
-            "> ⚠ **Mutating command** — this operation modifies state.\n\n",
-        );
+        out.push_str("> ⚠ **Mutating command** — this operation modifies state.\n\n");
     }
 
     if !command.description.is_empty() {
@@ -1276,10 +1272,7 @@ pub fn render_skill_file(command: &Command) -> String {
                 .map(|c| format!("-{}", c))
                 .unwrap_or_else(|| "—".to_string());
             let req = if flag.required { "yes" } else { "no" };
-            let default = flag
-                .default
-                .as_deref()
-                .unwrap_or("—");
+            let default = flag.default.as_deref().unwrap_or("—");
             out.push_str(&format!(
                 "| --{} | {} | {} | {} | {} |\n",
                 flag.name, short, req, default, flag.description
@@ -2037,8 +2030,14 @@ mod tests {
     fn test_render_skill_file_safe_usage_section() {
         let cmd = skill_full_command();
         let skill = render_skill_file(&cmd);
-        assert!(skill.contains("## Safe Usage"), "missing Safe Usage section");
-        assert!(skill.contains("Always prefer:"), "missing 'Always prefer:' line");
+        assert!(
+            skill.contains("## Safe Usage"),
+            "missing Safe Usage section"
+        );
+        assert!(
+            skill.contains("Always prefer:"),
+            "missing 'Always prefer:' line"
+        );
         assert!(
             skill.contains("- always dry-run first"),
             "missing first best practice"
@@ -2097,8 +2096,14 @@ mod tests {
         let cmd = skill_full_command();
         let skill = render_skill_file(&cmd);
         assert!(skill.contains("## Examples"), "missing Examples section");
-        assert!(skill.contains("```\ndeploy prod\n```"), "missing first example code block");
-        assert!(skill.contains("> deploy to prod"), "missing first example description");
+        assert!(
+            skill.contains("```\ndeploy prod\n```"),
+            "missing first example code block"
+        );
+        assert!(
+            skill.contains("> deploy to prod"),
+            "missing first example description"
+        );
         assert!(
             skill.contains("```\ndeploy prod --dry-run\n```"),
             "missing second example code block"
@@ -2113,7 +2118,10 @@ mod tests {
     fn test_render_skill_file_subcommands_section() {
         let cmd = skill_full_command();
         let skill = render_skill_file(&cmd);
-        assert!(skill.contains("## Subcommands"), "missing Subcommands section");
+        assert!(
+            skill.contains("## Subcommands"),
+            "missing Subcommands section"
+        );
         assert!(
             skill.contains("- `rollback` — Roll back a deployment"),
             "missing rollback subcommand entry"
@@ -2130,12 +2138,18 @@ mod tests {
         let skill = render_skill_file(&cmd);
         assert!(skill.contains("# Skill: ping"), "missing heading");
         assert!(skill.contains("Check connectivity"), "missing summary");
-        assert!(!skill.contains("## Safe Usage"), "Safe Usage must be omitted");
+        assert!(
+            !skill.contains("## Safe Usage"),
+            "Safe Usage must be omitted"
+        );
         assert!(!skill.contains("## Avoid"), "Avoid must be omitted");
         assert!(!skill.contains("## Arguments"), "Arguments must be omitted");
         assert!(!skill.contains("## Flags"), "Flags must be omitted");
         assert!(!skill.contains("## Examples"), "Examples must be omitted");
-        assert!(!skill.contains("## Subcommands"), "Subcommands must be omitted");
+        assert!(
+            !skill.contains("## Subcommands"),
+            "Subcommands must be omitted"
+        );
     }
 
     #[test]
@@ -2196,7 +2210,10 @@ mod tests {
         let reg = skill_registry();
         let skills = render_skill_files(&reg);
         assert!(skills.contains("# Skill: deploy"), "missing deploy skill");
-        assert!(skills.contains("# Skill: rollback"), "missing rollback skill");
+        assert!(
+            skills.contains("# Skill: rollback"),
+            "missing rollback skill"
+        );
         assert!(skills.contains("# Skill: status"), "missing status skill");
     }
 
@@ -2204,7 +2221,10 @@ mod tests {
     fn test_render_skill_files_separated_by_separator() {
         let reg = skill_registry();
         let skills = render_skill_files(&reg);
-        assert!(skills.contains("---\n\n"), "skill files must be separated by '---'");
+        assert!(
+            skills.contains("---\n\n"),
+            "skill files must be separated by '---'"
+        );
     }
 
     #[test]
@@ -2213,19 +2233,26 @@ mod tests {
         let reg = Registry::new(vec![]);
         let skills = render_skill_files(&reg);
         // Empty registry yields an empty string (no separators, no content)
-        assert!(skills.is_empty(), "empty registry must yield empty skill files string");
+        assert!(
+            skills.is_empty(),
+            "empty registry must yield empty skill files string"
+        );
     }
 
     #[test]
     fn test_render_skill_files_single_command_no_separator() {
         use crate::query::Registry;
-        let reg = Registry::new(vec![
-            Command::builder("ping").summary("Ping").build().unwrap(),
-        ]);
+        let reg = Registry::new(vec![Command::builder("ping")
+            .summary("Ping")
+            .build()
+            .unwrap()]);
         let skills = render_skill_files(&reg);
         assert!(skills.contains("# Skill: ping"));
         // Single command: no separator expected
-        assert!(!skills.contains("---"), "single command must not produce separator");
+        assert!(
+            !skills.contains("---"),
+            "single command must not produce separator"
+        );
     }
 
     #[test]
@@ -2276,7 +2303,12 @@ mod tests {
     fn test_render_help_mutating_with_dry_run_no_note() {
         let cmd = Command::builder("delete")
             .summary("Delete a resource")
-            .flag(Flag::builder("dry-run").description("Simulate only").build().unwrap())
+            .flag(
+                Flag::builder("dry-run")
+                    .description("Simulate only")
+                    .build()
+                    .unwrap(),
+            )
             .mutating()
             .build()
             .unwrap();
@@ -2438,8 +2470,7 @@ mod tests {
             .summary("Deploy the application")
             .build()
             .unwrap();
-        let fm = super::SkillFrontmatter::new("mytool-deploy")
-            .description("My custom description");
+        let fm = super::SkillFrontmatter::new("mytool-deploy").description("My custom description");
         let text = super::render_frontmatter(&fm, &cmd);
         assert!(text.contains("description: My custom description\n"));
         assert!(!text.contains("Deploy the application"));
@@ -2477,8 +2508,14 @@ mod tests {
     fn test_render_skill_files_with_frontmatter_none_falls_back_to_plain() {
         use crate::query::Registry;
         let registry = Registry::new(vec![
-            Command::builder("deploy").summary("Deploy").build().unwrap(),
-            Command::builder("status").summary("Status").build().unwrap(),
+            Command::builder("deploy")
+                .summary("Deploy")
+                .build()
+                .unwrap(),
+            Command::builder("status")
+                .summary("Status")
+                .build()
+                .unwrap(),
         ]);
         // Return None for "status" → plain skill file; Some for "deploy"
         let output = render_skill_files_with_frontmatter(&registry, |cmd| {
@@ -2488,7 +2525,10 @@ mod tests {
                 None
             }
         });
-        assert!(output.contains("name: mytool-deploy"), "deploy has frontmatter");
+        assert!(
+            output.contains("name: mytool-deploy"),
+            "deploy has frontmatter"
+        );
         assert!(output.contains("# Skill: deploy"));
         assert!(output.contains("# Skill: status"));
         // status should NOT have a frontmatter name line
@@ -2509,11 +2549,20 @@ mod tests {
     fn test_render_skill_files_with_frontmatter_all_with_fm() {
         use crate::query::Registry;
         let registry = Registry::new(vec![
-            Command::builder("deploy").summary("Deploy").build().unwrap(),
-            Command::builder("status").summary("Status").build().unwrap(),
+            Command::builder("deploy")
+                .summary("Deploy")
+                .build()
+                .unwrap(),
+            Command::builder("status")
+                .summary("Status")
+                .build()
+                .unwrap(),
         ]);
         let output = render_skill_files_with_frontmatter(&registry, |cmd| {
-            Some(super::SkillFrontmatter::new(format!("tool-{}", cmd.canonical)))
+            Some(super::SkillFrontmatter::new(format!(
+                "tool-{}",
+                cmd.canonical
+            )))
         });
         assert!(output.contains("name: tool-deploy"));
         assert!(output.contains("name: tool-status"));

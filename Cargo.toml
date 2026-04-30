@@ -32,6 +32,7 @@ async = []
 mcp = []
 derive = ["dep:argot-cmd-derive"]
 fuzzy = ["dep:fuzzy-matcher"]
+markdown-source = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -42,3 +43,4 @@ argot-cmd-derive = { path = "argot-cmd-derive", version = "0.2", optional = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"

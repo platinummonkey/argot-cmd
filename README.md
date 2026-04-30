@@ -479,8 +479,8 @@ All render functions return `String`. None of them print directly; callers write
 use argot_cmd::render_help;
 
 let help = render_help(&cmd);
-// Sections: NAME, SUMMARY, DESCRIPTION, USAGE, ARGUMENTS, FLAGS,
-//           SUBCOMMANDS, EXAMPLES, BEST PRACTICES, ANTI-PATTERNS
+// Sections: NAME, SUMMARY, DESCRIPTION, USAGE, ARGUMENTS, SUBCOMMANDS,
+//           FLAGS, EXAMPLES, BEST PRACTICES, ANTI-PATTERNS
 // Empty sections are omitted.
 ```
 
@@ -897,6 +897,94 @@ Fuzzy search covers the canonical name, summary, and description fields. Command
 
 ---
 
+## Layered Command Sources
+
+For applications that want commands to come from more than just compile-time `Vec<Command>` definitions — e.g. per-user overrides in `~/.config/<app>/commands/`, or project-specific commands committed in `.<app>/commands/` — argot provides a `source` module with a `CommandSource` trait, a `LayeredBuilder` merger with deterministic precedence rules, and (with the `markdown-source` feature) a directory-of-Markdown-files source.
+
+### Quick example
+
+```rust,ignore
+use argot_cmd::{Cli, Command};
+use argot_cmd::source::{EmbeddedSource, LayeredBuilder};
+use argot_cmd::source::markdown::MarkdownDirSource;
+
+let embedded = vec![
+    Command::builder("deploy").summary("Deploy (built-in)").build().unwrap(),
+];
+
+let mut builder = LayeredBuilder::new()
+    .add(EmbeddedSource::new("builtin", embedded));
+
+if let Some(user) = MarkdownDirSource::user_config("myapp") {
+    builder = builder.add(user);
+}
+if let Some(project) = MarkdownDirSource::project_root("myapp") {
+    builder = builder.add(project);
+}
+
+let (cli, diagnostics) = Cli::from_layered(builder);
+
+// Abort on errors, print warnings.
+let (errors, warnings): (Vec<_>, Vec<_>) =
+    diagnostics.iter().partition(|d| d.is_error());
+if !errors.is_empty() {
+    for d in errors { eprintln!("error: {}", d); }
+    std::process::exit(2);
+}
+for d in warnings { eprintln!("warning: {}", d); }
+
+cli.run_env_args_and_exit();
+```
+
+### Precedence
+
+When two sources contribute commands with the same canonical name, the winner is decided by:
+
+1. **Layer rank** — higher rank wins. Default order: `Embedded(0)` < `User(100)` < `Project(200)` < `Local(300)`. Use `Layer::Custom(n)` for arbitrary positions.
+2. **Priority** within the same layer — higher wins, default 0.
+3. **Source insertion order** — later source wins ties.
+
+Every losing entry is recorded as a `LoadDiagnostic::Shadowed` so users can see why a command resolved to the version it did.
+
+### Authoring commands as Markdown
+
+With `--features markdown-source`, a `MarkdownDirSource` reads `*.md` files like:
+
+```markdown
+---
+name: deploy
+summary: Deploy the application
+priority: 10
+overrides: deploy
+mutating: true
+---
+
+Long-form description goes here.
+
+## Arguments
+
+- `env` (required): Target environment
+- `service`: Specific service to deploy
+
+## Flags
+
+- `--dry-run, -n`: Simulate without making changes
+- `--timeout` <SECONDS> (default: 300): Operation timeout
+
+## Examples
+
+- Basic: `myapp deploy production`
+- Dry run: `myapp deploy production --dry-run`
+```
+
+Frontmatter holds metadata; the `## Arguments`, `## Flags`, and `## Examples` sections are parsed into typed `Argument`, `Flag`, and `Example` values. Per-bullet parse failures emit `SchemaWarning` diagnostics rather than aborting.
+
+Markdown commands are metadata-only — runtime handlers must still be attached in Rust.
+
+See `examples/layered_commands.rs` for a complete worked example, and `docs/migrating-from-clap.md` if you're coming from clap.
+
+---
+
 ## Feature Flags
 
 | Feature | Description | Default |
@@ -905,6 +993,7 @@ Fuzzy search covers the canonical name, summary, and description fields. Command
 | `derive` | `#[derive(ArgotCommand)]` proc-macro from `argot-cmd-derive` | no |
 | `fuzzy` | `Registry::fuzzy_search()` via `fuzzy-matcher` (skim algorithm) | no |
 | `mcp` | `McpServer` stdio transport (Model Context Protocol) | no |
+| `markdown-source` | `MarkdownDirSource` for loading commands from `*.md` files | no |
 
 ---
 

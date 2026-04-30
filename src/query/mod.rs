@@ -666,13 +666,11 @@ pub fn command_to_json_with_fields(cmd: &Command, fields: &[&str]) -> Result<Str
 /// in each entry.
 fn filter_commands_value(value: serde_json::Value, fields: &[&str]) -> serde_json::Value {
     match value {
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(
-                arr.into_iter()
-                    .map(|v| filter_command_object(v, fields))
-                    .collect(),
-            )
-        }
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.into_iter()
+                .map(|v| filter_command_object(v, fields))
+                .collect(),
+        ),
         other => other,
     }
 }
@@ -890,7 +888,12 @@ mod tests {
             .split('\n')
             .filter(|l| !l.is_empty())
             .collect();
-        assert_eq!(lines.len(), 3, "remote + push + list = 3 lines, got: {:?}", lines);
+        assert_eq!(
+            lines.len(),
+            3,
+            "remote + push + list = 3 lines, got: {:?}",
+            lines
+        );
     }
 
     #[test]
@@ -923,8 +926,16 @@ mod tests {
         let ndjson = r.to_ndjson_with_fields(&["canonical", "summary"]).unwrap();
         for line in ndjson.trim_end_matches('\n').split('\n') {
             let val: serde_json::Value = serde_json::from_str(line).unwrap();
-            assert!(val.get("canonical").is_some(), "missing 'canonical' in line: {}", line);
-            assert!(val.get("summary").is_some(), "missing 'summary' in line: {}", line);
+            assert!(
+                val.get("canonical").is_some(),
+                "missing 'canonical' in line: {}",
+                line
+            );
+            assert!(
+                val.get("summary").is_some(),
+                "missing 'summary' in line: {}",
+                line
+            );
             assert!(
                 val.get("description").is_none(),
                 "'description' should be filtered out: {}",
@@ -948,7 +959,10 @@ mod tests {
 
     #[test]
     fn test_command_to_ndjson_single_compact_line() {
-        let cmd = Command::builder("deploy").summary("Deploy").build().unwrap();
+        let cmd = Command::builder("deploy")
+            .summary("Deploy")
+            .build()
+            .unwrap();
         let line = super::command_to_ndjson(&cmd).unwrap();
         assert!(
             !line.ends_with('\n'),
@@ -970,18 +984,19 @@ mod tests {
         // Compact JSON has no newlines and is not pretty-printed.
         assert!(!line.contains('\n'));
         // Compact JSON should not have extra whitespace after colons (serde_json compact).
-        assert!(!line.contains(": "), "should be compact, not pretty-printed");
+        assert!(
+            !line.contains(": "),
+            "should be compact, not pretty-printed"
+        );
     }
 
     #[test]
     fn test_to_json_with_fields_filters_keys() {
-        let r = Registry::new(vec![
-            Command::builder("deploy")
-                .summary("Deploy the app")
-                .description("Deploys to production")
-                .build()
-                .unwrap(),
-        ]);
+        let r = Registry::new(vec![Command::builder("deploy")
+            .summary("Deploy the app")
+            .description("Deploys to production")
+            .build()
+            .unwrap()]);
         let json = r.to_json_with_fields(&["canonical", "summary"]).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let obj = &v[0];
@@ -995,12 +1010,10 @@ mod tests {
 
     #[test]
     fn test_to_json_with_fields_empty_falls_back_to_full() {
-        let r = Registry::new(vec![
-            Command::builder("deploy")
-                .summary("Deploy the app")
-                .build()
-                .unwrap(),
-        ]);
+        let r = Registry::new(vec![Command::builder("deploy")
+            .summary("Deploy the app")
+            .build()
+            .unwrap()]);
         let full = r.to_json().unwrap();
         let filtered = r.to_json_with_fields(&[]).unwrap();
         assert_eq!(full, filtered);
@@ -1008,9 +1021,7 @@ mod tests {
 
     #[test]
     fn test_to_json_with_fields_missing_field_silently_omitted() {
-        let r = Registry::new(vec![
-            Command::builder("deploy").build().unwrap(),
-        ]);
+        let r = Registry::new(vec![Command::builder("deploy").build().unwrap()]);
         // "nonexistent_key" does not exist — should produce an object with only "canonical"
         let json = r
             .to_json_with_fields(&["canonical", "nonexistent_key"])
@@ -1023,19 +1034,17 @@ mod tests {
 
     #[test]
     fn test_to_json_with_fields_subcommands_filtered_recursively() {
-        let r = Registry::new(vec![
-            Command::builder("remote")
-                .summary("Manage remotes")
-                .subcommand(
-                    Command::builder("add")
-                        .summary("Add a remote")
-                        .description("Detailed add docs")
-                        .build()
-                        .unwrap(),
-                )
-                .build()
-                .unwrap(),
-        ]);
+        let r = Registry::new(vec![Command::builder("remote")
+            .summary("Manage remotes")
+            .subcommand(
+                Command::builder("add")
+                    .summary("Add a remote")
+                    .description("Detailed add docs")
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()]);
         let json = r
             .to_json_with_fields(&["canonical", "summary", "subcommands"])
             .unwrap();
@@ -1054,12 +1063,10 @@ mod tests {
 
     #[test]
     fn test_to_json_with_fields_subcommands_not_requested_absent() {
-        let r = Registry::new(vec![
-            Command::builder("remote")
-                .subcommand(Command::builder("add").build().unwrap())
-                .build()
-                .unwrap(),
-        ]);
+        let r = Registry::new(vec![Command::builder("remote")
+            .subcommand(Command::builder("add").build().unwrap())
+            .build()
+            .unwrap()]);
         // "subcommands" not in requested fields → key should be absent
         let json = r.to_json_with_fields(&["canonical"]).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
